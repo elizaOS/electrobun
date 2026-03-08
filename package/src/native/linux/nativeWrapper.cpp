@@ -3090,8 +3090,17 @@ public:
     
     void resize(const GdkRectangle& frame, const char* masksJson) override {
         if (webview) {
-            // Resizing webview
-            
+            if (fullSize) {
+                // Full-size webviews use expand=TRUE and fill the overlay automatically.
+                // Do NOT set gtk_widget_set_size_request — it acts as a minimum size
+                // constraint that prevents the window from shrinking.
+                gtk_widget_set_size_request(webview, -1, -1);
+            } else {
+                // Non-fullSize (OOPIF) webviews need explicit sizing
+                gtk_widget_set_size_request(webview, -1, -1);
+                gtk_widget_set_size_request(webview, frame.width, frame.height);
+            }
+
             // Check if this webview has a wrapper (OOPIF case)
             GtkWidget* wrapper = (GtkWidget*)g_object_get_data(G_OBJECT(webview), "wrapper");
             if (wrapper) {
@@ -3107,7 +3116,8 @@ public:
                 int clampedY = MAX(0, frame.y);
                 int offsetX = frame.x - clampedX;  // Will be negative if frame.x < 0
                 int offsetY = frame.y - clampedY;  // Will be negative if frame.y < 0
-                
+
+                gtk_widget_set_size_request(wrapper, -1, -1);
                 gtk_widget_set_size_request(wrapper, frame.width, frame.height);
                 gtk_widget_set_margin_start(wrapper, clampedX);
                 gtk_widget_set_margin_top(wrapper, clampedY);
@@ -3115,12 +3125,10 @@ public:
                 // Position webview within wrapper with offset to handle negative positions
                 // Note: /2 division appears necessary for GTK coordinate system
                 gtk_fixed_move(GTK_FIXED(wrapper), webview, offsetX / 2, offsetY / 2);
-               
-                // OOPIF positioned with coordinate adjustment
-            } else {
-                gtk_widget_set_size_request(webview, -1, -1);
 
-                // For host webview, position directly with margins (can't be negative)
+                // OOPIF positioned with coordinate adjustment
+            } else if (!fullSize) {
+                // For non-fullSize host webview, position directly with margins
                 gtk_widget_set_margin_start(webview, MAX(0, frame.x));
                 gtk_widget_set_margin_top(webview, MAX(0, frame.y));
             }
@@ -3996,7 +4004,12 @@ public:
             XFlush(xDisplay);
             visualBounds = frame;
         } else if (viewWidget) {
-            gtk_widget_set_size_request(viewWidget, frame.width, frame.height);
+            if (fullSize) {
+                gtk_widget_set_size_request(viewWidget, -1, -1);
+            } else {
+                gtk_widget_set_size_request(viewWidget, -1, -1);
+                gtk_widget_set_size_request(viewWidget, frame.width, frame.height);
+            }
 
             GtkWidget* wrapper = (GtkWidget*)g_object_get_data(G_OBJECT(viewWidget), "wrapper");
             if (wrapper) {
@@ -4005,6 +4018,7 @@ public:
                 int offsetX = frame.x - clampedX;
                 int offsetY = frame.y - clampedY;
 
+                gtk_widget_set_size_request(wrapper, -1, -1);
                 gtk_widget_set_size_request(wrapper, frame.width, frame.height);
                 gtk_widget_set_margin_start(wrapper, clampedX);
                 gtk_widget_set_margin_top(wrapper, clampedY);
@@ -5282,6 +5296,13 @@ public:
             }
             // OOPIFs (fullSize=false) keep their positioning and don't auto-resize
             // The JavaScript ResizeObserver will handle repositioning them
+        }
+
+        // Ensure the overlay has no minimum size constraint that would
+        // prevent the window from shrinking. The overlay fills the window
+        // via expand=TRUE, so explicit size_request is unnecessary.
+        if (overlay) {
+            gtk_widget_set_size_request(overlay, -1, -1);
         }
     }
 };
