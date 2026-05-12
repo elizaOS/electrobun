@@ -2763,7 +2763,7 @@ usageDescriptions : ""}${urlTypes ? "\n" + urlTypes : ""}${documentTypes ?
 		}
 
 		// Embed icon into launcher.exe on Windows
-		if (targetOS === "win" && config.build.win?.icon && RCEDIT_DEP_PATH) {
+		if (targetOS === "win" && config.build.win?.icon) {
 			const iconSourcePath =
 				config.build.win.icon.startsWith("/") ||
 				config.build.win.icon.match(/^[a-zA-Z]:/)
@@ -2870,7 +2870,7 @@ usageDescriptions : ""}${urlTypes ? "\n" + urlTypes : ""}${documentTypes ?
 			}
 
 			// Embed icon into bun.exe on Windows
-			if (targetOS === "win" && config.build.win?.icon && RCEDIT_DEP_PATH) {
+			if (targetOS === "win" && config.build.win?.icon) {
 				const iconSourcePath =
 					config.build.win.icon.startsWith("/") ||
 					config.build.win.icon.match(/^[a-zA-Z]:/)
@@ -5156,7 +5156,7 @@ usageDescriptions : ""}${urlTypes ? "\n" + urlTypes : ""}${documentTypes ?
 		writeFileSync(outputExePath, new Uint8Array(extractorExe));
 
 		// Embed icon into the wrapper EXE if provided
-		if (config.build.win?.icon && RCEDIT_DEP_PATH) {
+		if (config.build.win?.icon) {
 			const iconSourcePath =
 				config.build.win.icon.startsWith("/") ||
 				config.build.win.icon.match(/^[a-zA-Z]:/)
