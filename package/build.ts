@@ -44,7 +44,7 @@ const { values: args } = parseArgs({
 const CHANNEL: "debug" | "release" = args.release ? "release" : "debug";
 const IS_NPM_BUILD = args.npm || false;
 const OS: "win" | "linux" | "macos" = getPlatform();
-const ARCH: "arm64" | "x64" = getArch();
+const ARCH: "arm64" | "x64" | "riscv64" = getArch();
 
 const isWindows = platform() === "win32";
 const binExt = OS === "win" ? ".exe" : "";
@@ -784,12 +784,16 @@ function getPlatform() {
 	}
 }
 
-function getArch() {
-	switch (arch()) {
+function getArch(): "arm64" | "x64" | "riscv64" {
+	// ELECTROBUN_TARGET_ARCH overrides the host arch for cross-builds
+	// (e.g. building the linux-riscv64 core on an x86_64 host).
+	switch (process.env.ELECTROBUN_TARGET_ARCH || arch()) {
 		case "arm64":
 			return "arm64";
 		case "x64":
 			return "x64";
+		case "riscv64":
+			return "riscv64";
 		default:
 			throw new Error("unsupported arch");
 	}
@@ -811,6 +815,23 @@ async function BunInstall() {
 }
 
 async function vendorBun() {
+	// ELECTROBUN_BUN_PATH: bundle a caller-provided bun binary instead of
+	// downloading from oven-sh/bun releases. Required for linux-riscv64 (no
+	// upstream bun release) and used to bundle our self-built bun 1.3.14.
+	const overrideBun = process.env.ELECTROBUN_BUN_PATH;
+	if (overrideBun) {
+		if (!existsSync(overrideBun)) {
+			throw new Error(`ELECTROBUN_BUN_PATH does not exist: ${overrideBun}`);
+		}
+		const overrideBunDir = join(process.cwd(), "vendors", "bun");
+		mkdirSync(overrideBunDir, { recursive: true });
+		await $`cp ${overrideBun} ${PATH.bun.RUNTIME}`;
+		await $`chmod +x ${PATH.bun.RUNTIME}`;
+		writeFileSync(join(overrideBunDir, ".bun-version"), BUN_VERSION);
+		console.log(`Using ELECTROBUN_BUN_PATH for bundled bun: ${overrideBun}`);
+		return;
+	}
+
 	// Check if vendored Bun version matches expected version.
 	// When the hardcoded version is bumped (e.g. after a git pull),
 	// this detects the mismatch and forces a clean re-vendor.
@@ -1046,6 +1067,12 @@ async function vendorZstd() {
 }
 
 async function vendorWGPU() {
+	// No WGPU/Dawn build exists for linux-riscv64; the riscv64 GUI uses
+	// WebKitGTK with software (llvmpipe) rendering, so WGPU is skipped.
+	if (ARCH === "riscv64") {
+		console.log("Skipping WGPU vendoring for riscv64 (no Dawn build).");
+		return;
+	}
 	const WGPU_VERSION = "0.2.3";
 	const wgpuBaseDir = join(process.cwd(), "vendors", "wgpu");
 	const wgpuDir = join(wgpuBaseDir, `${OS}-${ARCH}`);
@@ -1249,6 +1276,12 @@ async function vendorAsar() {
 }
 
 async function vendorCEF() {
+	// CEF has no linux-riscv64 build; electrobun runs WebKitGTK-only there
+	// (the native wrapper already falls back to WebKitGTK when CEF is absent).
+	if (ARCH === "riscv64") {
+		console.log("Skipping CEF vendoring for riscv64 (no CEF build).");
+		return;
+	}
 	// CEF_VERSION, CHROMIUM_VERSION, and DEFAULT_CEF_VERSION_STRING are imported from src/shared/cef-version.ts
 	const expectedVersionString = DEFAULT_CEF_VERSION_STRING;
 
@@ -1943,9 +1976,13 @@ async function buildNative() {
 				pkgConfigCflags ? "pkg-config flags present" : "NO FLAGS!",
 			);
 
-			// Build the complete g++ command as an array to avoid shell interpolation issues
+			// ELECTROBUN_CXX overrides the C++ compiler for cross-builds (e.g. the
+			// riscv64-linux-musl clang++ wrapper). pkg-config is pointed at the
+			// target sysroot via PKG_CONFIG_SYSROOT_DIR / PKG_CONFIG_LIBDIR env.
+			const CXX = process.env.ELECTROBUN_CXX || "g++";
+			// Build the complete compile command as an array to avoid shell interpolation issues
 			const compileCmd = [
-				"g++",
+				CXX,
 				"-c",
 				"-std=c++20",
 				"-fPIC",
@@ -1968,7 +2005,7 @@ async function buildNative() {
 
 			console.log("Building GTK-only version (libNativeWrapper.so)");
 			const linkCmd = [
-				"g++",
+				CXX,
 				"-shared",
 				"-o",
 				"src/native/build/libNativeWrapper.so",
@@ -2033,6 +2070,10 @@ async function buildLauncher() {
 	} else if (OS === "linux") {
 		if (ARCH === "arm64") {
 			zigArgs = ["-Dtarget=aarch64-linux"];
+		} else if (ARCH === "riscv64") {
+			zigArgs = [
+				`-Dtarget=${process.env.ELECTROBUN_ZIG_TARGET || "riscv64-linux-musl"}`,
+			];
 		} else {
 			zigArgs = ["-Dtarget=x86_64-linux"];
 		}
@@ -2077,9 +2118,11 @@ async function buildSelfExtractor() {
 	const zigArgs =
 		OS === "win"
 			? ["-Dtarget=x86_64-windows", "-Dcpu=baseline"]
-			: ARCH === "x64"
-				? ["-Dcpu=baseline"]
-				: [];
+			: ARCH === "riscv64"
+				? [`-Dtarget=${process.env.ELECTROBUN_ZIG_TARGET || "riscv64-linux-musl"}`]
+				: ARCH === "x64"
+					? ["-Dcpu=baseline"]
+					: [];
 
 	if (CHANNEL === "debug") {
 		await $`cd src/extractor && ../../vendors/zig/zig build ${zigArgs}`;

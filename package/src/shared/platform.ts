@@ -1,11 +1,14 @@
 import { platform, arch } from "os";
 
 export type SupportedOS = "macos" | "win" | "linux";
-export type SupportedArch = "arm64" | "x64";
+export type SupportedArch = "arm64" | "x64" | "riscv64";
 
 // Cache platform() result to avoid multiple system calls
 const platformName = platform();
-const archName = arch();
+// ELECTROBUN_TARGET_ARCH lets a cross-build (e.g. linux-riscv64 on an x64 host)
+// override the detected host arch. Node's os.arch() reports "riscv64" natively
+// when run on riscv64, so the switch below also accepts it directly.
+const archName = process.env.ELECTROBUN_TARGET_ARCH || arch();
 
 // Determine OS once
 export const OS: SupportedOS = (() => {
@@ -33,6 +36,8 @@ export const ARCH: SupportedArch = (() => {
 			return "arm64";
 		case "x64":
 			return "x64";
+		case "riscv64":
+			return "riscv64";
 		default:
 			throw new Error(`Unsupported architecture: ${archName}`);
 	}
