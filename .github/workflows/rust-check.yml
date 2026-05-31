@@ -1,0 +1,42 @@
+name: rust-check
+
+# Static analysis gate for the native Rust programs (launcher/core/extractor/sdk)
+# that replaced the former Zig sources. Mirrors the local `bun run rust:check`.
+on:
+  push:
+    paths:
+      - "package/rust/**"
+      - ".github/workflows/rust-check.yml"
+  pull_request:
+    paths:
+      - "package/rust/**"
+      - ".github/workflows/rust-check.yml"
+
+jobs:
+  rust-check:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: package/rust
+    steps:
+      - uses: actions/checkout@v4
+
+      # rust-toolchain.toml pins the channel + components + targets; `rustup show`
+      # installs it on first use.
+      - name: Install pinned Rust toolchain
+        run: rustup show
+
+      - name: rustfmt
+        run: cargo fmt --all --check
+
+      - name: clippy (deny warnings)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: install supply-chain tools
+        run: cargo install cargo-deny cargo-machete --locked
+
+      - name: cargo-deny (advisories + licenses + sources)
+        run: cargo deny check
+
+      - name: cargo-machete (unused deps)
+        run: cargo machete

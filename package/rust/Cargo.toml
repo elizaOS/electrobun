@@ -1,0 +1,28 @@
+[workspace]
+resolver = "2"
+members = ["crates/launcher", "crates/extractor", "crates/core", "crates/sdk"]
+
+# Shared metadata for the Electrobun native programs. These crates replace the
+# former Zig sources under package/src/{launcher,core,extractor,zig-sdk}. The
+# C/C++/objc++ platform wrappers (package/src/native/**) are unchanged and are
+# reached at runtime over a stable C ABI (dlopen + C-callconv function pointers).
+[workspace.package]
+version = "1.18.4-beta.3"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/elizaOS/electrobun"
+rust-version = "1.94"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+
+# Deny common foot-guns across the whole workspace.
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "warn"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }

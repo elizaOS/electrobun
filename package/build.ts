@@ -568,17 +568,23 @@ async function copyApiFiles() {
 async function copyToDist() {
 	// Bun runtime
 	await $`cp ${PATH.bun.RUNTIME} ${PATH.bun.DIST}`;
-	// Zig launcher for all platforms
-	await $`cp src/launcher/zig-out/bin/launcher${binExt} dist/launcher${binExt}`;
-	await $`cp src/extractor/zig-out/bin/extractor${binExt} dist/extractor${binExt}`;
+	// Native programs (launcher/core/extractor) are built by cargo into
+	// rust/target/<triple>/<profile>/.
+	const rustOutDir = join(
+		"rust",
+		"target",
+		getRustTarget(OS, ARCH),
+		rustProfile(),
+	);
+	await $`cp ${join(rustOutDir, `launcher${binExt}`)} dist/launcher${binExt}`;
+	await $`cp ${join(rustOutDir, `extractor${binExt}`)} dist/extractor${binExt}`;
 	const coreLibName =
 		OS === "win"
 			? "ElectrobunCore.dll"
 			: OS === "macos"
 				? "libElectrobunCore.dylib"
 				: "libElectrobunCore.so";
-	const coreLibSourceDir = OS === "win" ? "bin" : "lib";
-	await $`cp ${join("src", "core", "zig-out", coreLibSourceDir, coreLibName)} ${join("dist", coreLibName)}`;
+	await $`cp ${join(rustOutDir, coreLibName)} ${join("dist", coreLibName)}`;
 	// Copy bsdiff/bspatch from vendored zig-bsdiff
 	await $`cp vendors/zig-bsdiff/bsdiff${binExt} dist/bsdiff${binExt}`;
 	await $`cp vendors/zig-bsdiff/bspatch${binExt} dist/bspatch${binExt}`;
@@ -2069,61 +2075,43 @@ async function buildNative() {
 	}
 }
 
+// Maps an Electrobun (os, arch) to the Rust target triple used to build the
+// native programs (launcher/core/extractor). riscv64 has no CEF build, so it
+// uses the native-webview path and the musl toolchain shared with the
+// self-built riscv64 Bun pipeline.
+function getRustTarget(os: string, arch: string): string {
+	if (os === "win") return "x86_64-pc-windows-msvc";
+	if (os === "linux") {
+		if (arch === "arm64") return "aarch64-unknown-linux-gnu";
+		if (arch === "riscv64") return "riscv64gc-unknown-linux-musl";
+		return "x86_64-unknown-linux-gnu";
+	}
+	return arch === "arm64" ? "aarch64-apple-darwin" : "x86_64-apple-darwin";
+}
+
+// Cargo writes artifacts under target/<triple>/<profile>/. We always pass an
+// explicit --target so the output path is deterministic regardless of host.
+function rustProfile(): "debug" | "release" {
+	return CHANNEL === "release" ? "release" : "debug";
+}
+
+async function buildRustComponent(crate: string) {
+	const target = getRustTarget(OS, ARCH);
+	if (CHANNEL === "debug") {
+		await $`cd rust && cargo build -p ${crate} --target ${target}`;
+	} else if (CHANNEL === "release") {
+		await $`cd rust && cargo build -p ${crate} --release --target ${target}`;
+	}
+}
+
 async function buildLauncher() {
 	console.log(`Building launcher for ${OS} ${ARCH}...`);
-
-	let zigArgs: string[] = [];
-
-	if (OS === "win") {
-		// Windows always x64 for now
-		zigArgs = ["-Dtarget=x86_64-windows", "-Dcpu=baseline"];
-	} else if (OS === "linux") {
-		if (ARCH === "arm64") {
-			zigArgs = ["-Dtarget=aarch64-linux-gnu"];
-		} else {
-			zigArgs = ["-Dtarget=x86_64-linux-gnu"];
-		}
-	} else if (OS === "macos") {
-		if (ARCH === "arm64") {
-			zigArgs = ["-Dtarget=aarch64-macos"];
-		} else {
-			zigArgs = ["-Dtarget=x86_64-macos"];
-		}
-	}
-
-	if (CHANNEL === "debug") {
-		await $`cd src/launcher && ../../vendors/zig/zig build ${zigArgs}`;
-	} else if (CHANNEL === "release") {
-		await $`cd src/launcher && ../../vendors/zig/zig build -Doptimize=ReleaseSmall ${zigArgs}`;
-	}
+	await buildRustComponent("launcher");
 }
 
 async function buildCore() {
 	console.log(`Building ElectrobunCore for ${OS} ${ARCH}...`);
-
-	let zigArgs: string[] = [];
-
-	if (OS === "win") {
-		zigArgs = ["-Dtarget=x86_64-windows", "-Dcpu=baseline"];
-	} else if (OS === "linux") {
-		if (ARCH === "arm64") {
-			zigArgs = ["-Dtarget=aarch64-linux-gnu"];
-		} else {
-			zigArgs = ["-Dtarget=x86_64-linux-gnu"];
-		}
-	} else if (OS === "macos") {
-		if (ARCH === "arm64") {
-			zigArgs = ["-Dtarget=aarch64-macos"];
-		} else {
-			zigArgs = ["-Dtarget=x86_64-macos"];
-		}
-	}
-
-	if (CHANNEL === "debug") {
-		await $`cd src/core && ../../vendors/zig/zig build ${zigArgs}`;
-	} else if (CHANNEL === "release") {
-		await $`cd src/core && ../../vendors/zig/zig build -Doptimize=ReleaseSmall ${zigArgs}`;
-	}
+	await buildRustComponent("electrobun-core");
 }
 
 async function buildMainJs() {
@@ -2149,18 +2137,8 @@ async function buildMainJs() {
 }
 
 async function buildSelfExtractor() {
-	const zigArgs =
-		OS === "win"
-			? ["-Dtarget=x86_64-windows", "-Dcpu=baseline"]
-			: ARCH === "x64"
-				? ["-Dcpu=baseline"]
-				: [];
-
-	if (CHANNEL === "debug") {
-		await $`cd src/extractor && ../../vendors/zig/zig build ${zigArgs}`;
-	} else if (CHANNEL === "release") {
-		await $`cd src/extractor && ../../vendors/zig/zig build -Doptimize=ReleaseSmall ${zigArgs}`;
-	}
+	console.log(`Building extractor for ${OS} ${ARCH}...`);
+	await buildRustComponent("extractor");
 }
 
 async function buildCli() {
