@@ -904,8 +904,13 @@ async function vendorBun() {
 	const tempZipPath = join("vendors", "bun", "temp.zip");
 	const extractDir = join("vendors", "bun");
 
+	// Canary ships only under the rolling `canary` release tag; concrete
+	// versions live under `bun-v<version>`.
+	const bunReleaseTag =
+		BUN_VERSION === "canary" ? "canary" : `bun-v${BUN_VERSION}`;
+
 	// Download zip file
-	await $`mkdir -p ${extractDir} && curl -L -o ${tempZipPath} https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/${bunUrlSegment}`;
+	await $`mkdir -p ${extractDir} && curl -L -o ${tempZipPath} https://github.com/oven-sh/bun/releases/download/${bunReleaseTag}/${bunUrlSegment}`;
 
 	// Validate download
 	validateDownload(tempZipPath, "bun");
