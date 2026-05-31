@@ -98,8 +98,9 @@ fn signal_wakeup() {
     }
     #[cfg(not(unix))]
     {
+        // Windows has no self-pipe; Bun polls the queue. Marking signaled keeps
+        // the coalescing invariant consistent (it is simply never observed).
         let _ = byte;
-        return;
     }
     state.signaled = true;
 }
