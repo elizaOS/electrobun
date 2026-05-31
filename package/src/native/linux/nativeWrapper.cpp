@@ -42,7 +42,9 @@
 #include <fstream>
 #include <set>
 #include <cstdarg>
+#if ELECTROBUN_ENABLE_WGPU
 #include "dawn/webgpu.h"
+#endif
 
 // Shared cross-platform utilities
 #include "../shared/glob_match.h"
@@ -3616,6 +3618,7 @@ public:
 
 };
 
+#if ELECTROBUN_ENABLE_WGPU
 // WGPUView implementation (non-webview rendering surface)
 class WGPUViewImpl : public AbstractView {
 public:
@@ -3999,6 +4002,16 @@ public:
     bool canGoBack() override { return false; }
     bool canGoForward() override { return false; }
 };
+#else
+// riscv64 / no-WGPU build: WGPUViewImpl is never instantiated (initWGPUView
+// is stubbed below), but the shared window-resize handler does
+// dynamic_cast<WGPUViewImpl*>() and reads ->parentXWindow, so a minimal
+// complete polymorphic type must exist for that call site to compile.
+class WGPUViewImpl : public AbstractView {
+public:
+    Window parentXWindow = 0;
+};
+#endif // ELECTROBUN_ENABLE_WGPU
 
 // Initialize static debounce timestamp for ctrl+click handling
 double WebKitWebViewImpl::lastCtrlClickTime = 0;
@@ -7091,6 +7104,7 @@ ELECTROBUN_EXPORT AbstractView* initWebview(uint32_t webviewId,
 
 }
 
+#if ELECTROBUN_ENABLE_WGPU
 ELECTROBUN_EXPORT AbstractView* initWGPUView(uint32_t webviewId,
                          void* window,
                          double x, double y,
@@ -7248,6 +7262,12 @@ ELECTROBUN_EXPORT AbstractView* initWGPUView(uint32_t webviewId,
 
     return view.get();
 }
+#else
+ELECTROBUN_EXPORT AbstractView* initWGPUView(uint32_t, void*, double, double,
+                                            double, double, bool, bool, bool) {
+    return nullptr;
+}
+#endif // ELECTROBUN_ENABLE_WGPU
 
 ELECTROBUN_EXPORT void loadURLInWebView(AbstractView* abstractView, const char* urlString) {
     if (abstractView && urlString) {
@@ -7258,6 +7278,7 @@ ELECTROBUN_EXPORT void loadURLInWebView(AbstractView* abstractView, const char* 
     }
 }
 
+#if ELECTROBUN_ENABLE_WGPU
 ELECTROBUN_EXPORT void wgpuViewSetFrame(AbstractView* abstractView, double x, double y, double width, double height) {
     if (!abstractView) return;
     GdkRectangle frame = {(int)x, (int)y, (int)width, (int)height};
@@ -8313,6 +8334,32 @@ ELECTROBUN_EXPORT void wgpuCreateAdapterDeviceMainThread(void* instancePtr, void
         }
     });
 }
+#else
+// riscv64 / no-WGPU build: no-op / null stubs for the WGPU C-ABI symbols the
+// launcher links against. Rendering falls back to the OS-native WebView
+// (WebKitGTK + llvmpipe); the WGPU surface path is simply unavailable.
+ELECTROBUN_EXPORT void wgpuViewSetFrame(AbstractView*, double, double, double, double) {}
+ELECTROBUN_EXPORT void wgpuViewSetTransparent(AbstractView*, bool) {}
+ELECTROBUN_EXPORT void wgpuViewSetPassthrough(AbstractView*, bool) {}
+ELECTROBUN_EXPORT void wgpuViewSetHidden(AbstractView*, bool) {}
+ELECTROBUN_EXPORT void wgpuViewRemove(AbstractView*) {}
+ELECTROBUN_EXPORT void* wgpuViewGetNativeHandle(AbstractView*) { return nullptr; }
+ELECTROBUN_EXPORT void* wgpuInstanceCreateSurfaceMainThread(void*, void*) { return nullptr; }
+ELECTROBUN_EXPORT void* wgpuCreateSurfaceForView(void*, AbstractView*) { return nullptr; }
+ELECTROBUN_EXPORT void wgpuSurfaceConfigureMainThread(void*, void*) {}
+ELECTROBUN_EXPORT void wgpuSurfaceGetCurrentTextureMainThread(void*, void*) {}
+ELECTROBUN_EXPORT int32_t wgpuSurfacePresentMainThread(void*) { return 0; }
+ELECTROBUN_EXPORT uint64_t wgpuQueueOnSubmittedWorkDoneShim(void*, void*) { return 0; }
+ELECTROBUN_EXPORT uint64_t wgpuBufferMapAsyncShim(void*, uint64_t, uint64_t, uint64_t, void*) { return 0; }
+ELECTROBUN_EXPORT int32_t wgpuInstanceWaitAnyShim(void*, uint64_t, uint64_t) { return 0; }
+ELECTROBUN_EXPORT uint8_t* wgpuBufferReadSyncShim(void*, void*, uint64_t, uint64_t, uint64_t, uint64_t*) { return nullptr; }
+ELECTROBUN_EXPORT int32_t wgpuBufferReadSyncIntoShim(void*, void*, uint64_t, uint64_t, uint64_t, void*) { return 0; }
+ELECTROBUN_EXPORT void* wgpuBufferReadbackBeginShim(void*, uint64_t, uint64_t, void*) { return nullptr; }
+ELECTROBUN_EXPORT int32_t wgpuBufferReadbackStatusShim(void*) { return 0; }
+ELECTROBUN_EXPORT void wgpuBufferReadbackFreeShim(void*) {}
+ELECTROBUN_EXPORT void wgpuRunGPUTest(void*) {}
+ELECTROBUN_EXPORT void wgpuCreateAdapterDeviceMainThread(void*, void*, void*) {}
+#endif // ELECTROBUN_ENABLE_WGPU
 
 ELECTROBUN_EXPORT void loadHTMLInWebView(AbstractView* abstractView, const char* htmlString) {
     if (abstractView && htmlString) {

@@ -1988,7 +1988,13 @@ async function buildNative() {
 				"-fPIC",
 				...pkgConfigCflags.split(/\s+/).filter((f) => f),
 				`-I${cefInclude}`,
-				...(existsSync(wgpuIncludeDir) ? [`-I${wgpuIncludeDir}`] : []),
+				// Dawn/WGPU is only vendored for x64/arm64; its presence drives both
+				// the include path and the ELECTROBUN_ENABLE_WGPU guard in
+				// nativeWrapper.cpp. On riscv64 (no Dawn build) neither is set, so
+				// the WGPU C-ABI symbols compile as no-op/null stubs.
+				...(existsSync(wgpuIncludeDir)
+					? [`-I${wgpuIncludeDir}`, "-DELECTROBUN_ENABLE_WGPU"]
+					: []),
 				...(hasAppIndicator ? [] : ["-DNO_APPINDICATOR"]),
 				"-o",
 				"src/native/linux/build/nativeWrapper.o",
