@@ -19,10 +19,17 @@ function uint8ArrayToBase64(uint8Array: Uint8Array): string {
 	return btoa(binary);
 }
 
+function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+	return bytes.buffer.slice(
+		bytes.byteOffset,
+		bytes.byteOffset + bytes.byteLength,
+	) as ArrayBuffer;
+}
+
 async function generateKeyFromBytes(rawKey: Uint8Array): Promise<CryptoKey> {
 	return await window.crypto.subtle.importKey(
 		"raw",
-		rawKey as unknown as ArrayBuffer,
+		toArrayBuffer(rawKey),
 		{ name: "AES-GCM" },
 		true,
 		["encrypt", "decrypt"],
@@ -41,9 +48,9 @@ export async function initEncryption(): Promise<void> {
 		const encodedText = encoder.encode(plaintext);
 		const iv = window.crypto.getRandomValues(new Uint8Array(12));
 		const encryptedBuffer = await window.crypto.subtle.encrypt(
-			{ name: "AES-GCM", iv },
+			{ name: "AES-GCM", iv: toArrayBuffer(iv) },
 			secretKey,
-			encodedText,
+			toArrayBuffer(encodedText),
 		);
 
 		// Split the tag (last 16 bytes) from the ciphertext
@@ -72,9 +79,9 @@ export async function initEncryption(): Promise<void> {
 		combinedData.set(tag, encryptedData.length);
 
 		const decryptedBuffer = await window.crypto.subtle.decrypt(
-			{ name: "AES-GCM", iv: iv as unknown as ArrayBuffer },
+			{ name: "AES-GCM", iv: toArrayBuffer(iv) },
 			secretKey,
-			combinedData as unknown as ArrayBuffer,
+			toArrayBuffer(combinedData),
 		);
 
 		const decoder = new TextDecoder();

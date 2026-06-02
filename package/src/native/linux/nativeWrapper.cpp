@@ -28,7 +28,9 @@
 #include <chrono>
 #include <unistd.h>
 #include <functional>
-#include <execinfo.h>
+#if defined(__GLIBC__)
+#include <execinfo.h> // backtrace(); glibc-only (musl, e.g. Alpine/riscv64, lacks it)
+#endif
 #include <cmath>
 #include <atomic>
 #include "../shared/pending_resize_queue.h"
@@ -40,7 +42,9 @@
 #include <fstream>
 #include <set>
 #include <cstdarg>
+#if ELECTROBUN_ENABLE_WGPU
 #include "dawn/webgpu.h"
+#endif
 
 // Shared cross-platform utilities
 #include "../shared/glob_match.h"
@@ -3783,6 +3787,7 @@ public:
 
 };
 
+#if ELECTROBUN_ENABLE_WGPU
 // WGPUView implementation (non-webview rendering surface)
 class WGPUViewImpl : public AbstractView {
 public:
@@ -4174,6 +4179,16 @@ public:
     bool canGoBack() override { return false; }
     bool canGoForward() override { return false; }
 };
+#else
+// riscv64 / no-WGPU build: WGPUViewImpl is never instantiated (initWGPUView
+// is stubbed below), but the shared window-resize handler does
+// dynamic_cast<WGPUViewImpl*>() and reads ->parentXWindow, so a minimal
+// complete polymorphic type must exist for that call site to compile.
+class WGPUViewImpl : public AbstractView {
+public:
+    Window parentXWindow = 0;
+};
+#endif // ELECTROBUN_ENABLE_WGPU
 
 // Initialize static debounce timestamp for ctrl+click handling
 double WebKitWebViewImpl::lastCtrlClickTime = 0;
@@ -5993,7 +6008,16 @@ void waitForGTKInit() {
 template<typename Func>
 auto dispatch_sync_main(Func&& func) -> decltype(func()) {
     using ReturnType = decltype(func());
-    
+
+    // ELIZAOS-PATCH: see dispatch_sync_main_void for rationale. Tracks the first
+    // worker->main-thread call through the value-returning variant separately,
+    // since createX11Window / createWebview go through this path.
+    static std::atomic<bool> s_first_dispatch_logged{false};
+    if (!s_first_dispatch_logged.exchange(true)) {
+        printf("[wrapper-dispatch] first dispatch_sync_main (value) from worker thread\n");
+        fflush(stdout);
+    }
+
     // If already on main thread, just execute
     if (g_main_context_is_owner(g_main_context_default())) {
         return func();
@@ -6061,6 +6085,16 @@ auto dispatch_sync_main(Func&& func) -> decltype(func()) {
 template<typename Func>
 typename std::enable_if<std::is_void<decltype(std::declval<Func>()())>::value>::type
 dispatch_sync_main_void(Func&& func) {
+    // ELIZAOS-PATCH: record the first time a non-main-thread (i.e. the bun Worker)
+    // dispatches work onto the GTK main loop. If "GTK EVENT LOOP STARTED" appears
+    // in serial but this line never does, the Worker thread is not making FFI
+    // calls into the wrapper — the deadlock is in the Worker's JS init, not in
+    // gtk_main / WebKitGTK.
+    static std::atomic<bool> s_first_dispatch_logged{false};
+    if (!s_first_dispatch_logged.exchange(true)) {
+        printf("[wrapper-dispatch] first dispatch_sync_main_void from worker thread\n");
+        fflush(stdout);
+    }
     if (g_main_context_is_owner(g_main_context_default())) {
         func();
         return;
@@ -6636,9 +6670,30 @@ void runCEFEventLoop() {
 void runGTKEventLoop() {
     // Initialize GTK on the main thread (this MUST be done here)
     initializeGTK();
-    printf("=== ELECTROBUN NATIVE WRAPPER VERSION 1.0.2 === GTK EVENT LOOP STARTED ===\n");
+    // ELIZAOS-PATCH: stdout is fully block-buffered when the launcher is run under
+    // systemd-cat / a kiosk service; without an explicit flush the "GTK EVENT LOOP
+    // STARTED" line can sit in libc's stdout buffer indefinitely while gtk_main()
+    // blocks in poll() on the X11 fd, which makes the wrapper look hung when in
+    // fact it is doing exactly what gtk_main is supposed to do. Force line-mode
+    // for the duration of the wrapper's life and flush this milestone explicitly.
+    setvbuf(stdout, nullptr, _IOLBF, 0);
+    printf("=== ELECTROBUN NATIVE WRAPPER VERSION 1.0.2 === GTK EVENT LOOP STARTED (elizaos-patch) ===\n");
+    fflush(stdout);
 
     // Note: GDK backend auto-detected (Wayland or X11). X11-specific features guarded at runtime.
+
+    // ELIZAOS-PATCH: emit a heartbeat from inside the GTK main loop so that "wrapper
+    // is alive and gtk_main is pumping" is observable from serial without needing
+    // gdb. Fires once per second. If this stream stops, gtk_main itself has wedged;
+    // if it continues but no createX11Window callback ever runs, the Worker thread
+    // (which is what makes the FFI calls that create windows) is the layer that
+    // is stuck — that is a bun / app-bundle problem, not a wrapper problem.
+    g_timeout_add_seconds(1, [](gpointer) -> gboolean {
+        static unsigned int tick = 0;
+        printf("[wrapper-heartbeat] gtk_main alive tick=%u\n", ++tick);
+        fflush(stdout);
+        return G_SOURCE_CONTINUE;
+    }, nullptr);
 
     gtk_main();
     g_shutdownComplete.store(true);
@@ -7412,6 +7467,7 @@ ELECTROBUN_EXPORT AbstractView* initWebview(uint32_t webviewId,
 
 }
 
+#if ELECTROBUN_ENABLE_WGPU
 ELECTROBUN_EXPORT AbstractView* initWGPUView(uint32_t webviewId,
                          void* window,
                          double x, double y,
@@ -7570,6 +7626,12 @@ ELECTROBUN_EXPORT AbstractView* initWGPUView(uint32_t webviewId,
 
     return view.get();
 }
+#else
+ELECTROBUN_EXPORT AbstractView* initWGPUView(uint32_t, void*, double, double,
+                                            double, double, bool, bool, bool) {
+    return nullptr;
+}
+#endif // ELECTROBUN_ENABLE_WGPU
 
 ELECTROBUN_EXPORT void loadURLInWebView(AbstractView* abstractView, const char* urlString) {
     if (abstractView && urlString) {
@@ -7580,6 +7642,7 @@ ELECTROBUN_EXPORT void loadURLInWebView(AbstractView* abstractView, const char* 
     }
 }
 
+#if ELECTROBUN_ENABLE_WGPU
 ELECTROBUN_EXPORT void wgpuViewSetFrame(AbstractView* abstractView, double x, double y, double width, double height) {
     if (!abstractView) return;
     GdkRectangle frame = {(int)x, (int)y, (int)width, (int)height};
@@ -8780,6 +8843,32 @@ ELECTROBUN_EXPORT void wgpuCreateAdapterDeviceMainThread(void* instancePtr, void
         }
     });
 }
+#else
+// riscv64 / no-WGPU build: no-op / null stubs for the WGPU C-ABI symbols the
+// launcher links against. Rendering falls back to the OS-native WebView
+// (WebKitGTK + llvmpipe); the WGPU surface path is simply unavailable.
+ELECTROBUN_EXPORT void wgpuViewSetFrame(AbstractView*, double, double, double, double) {}
+ELECTROBUN_EXPORT void wgpuViewSetTransparent(AbstractView*, bool) {}
+ELECTROBUN_EXPORT void wgpuViewSetPassthrough(AbstractView*, bool) {}
+ELECTROBUN_EXPORT void wgpuViewSetHidden(AbstractView*, bool) {}
+ELECTROBUN_EXPORT void wgpuViewRemove(AbstractView*) {}
+ELECTROBUN_EXPORT void* wgpuViewGetNativeHandle(AbstractView*) { return nullptr; }
+ELECTROBUN_EXPORT void* wgpuInstanceCreateSurfaceMainThread(void*, void*) { return nullptr; }
+ELECTROBUN_EXPORT void* wgpuCreateSurfaceForView(void*, AbstractView*) { return nullptr; }
+ELECTROBUN_EXPORT void wgpuSurfaceConfigureMainThread(void*, void*) {}
+ELECTROBUN_EXPORT void wgpuSurfaceGetCurrentTextureMainThread(void*, void*) {}
+ELECTROBUN_EXPORT int32_t wgpuSurfacePresentMainThread(void*) { return 0; }
+ELECTROBUN_EXPORT uint64_t wgpuQueueOnSubmittedWorkDoneShim(void*, void*) { return 0; }
+ELECTROBUN_EXPORT uint64_t wgpuBufferMapAsyncShim(void*, uint64_t, uint64_t, uint64_t, void*) { return 0; }
+ELECTROBUN_EXPORT int32_t wgpuInstanceWaitAnyShim(void*, uint64_t, uint64_t) { return 0; }
+ELECTROBUN_EXPORT uint8_t* wgpuBufferReadSyncShim(void*, void*, uint64_t, uint64_t, uint64_t, uint64_t*) { return nullptr; }
+ELECTROBUN_EXPORT int32_t wgpuBufferReadSyncIntoShim(void*, void*, uint64_t, uint64_t, uint64_t, void*) { return 0; }
+ELECTROBUN_EXPORT void* wgpuBufferReadbackBeginShim(void*, uint64_t, uint64_t, void*) { return nullptr; }
+ELECTROBUN_EXPORT int32_t wgpuBufferReadbackStatusShim(void*) { return 0; }
+ELECTROBUN_EXPORT void wgpuBufferReadbackFreeShim(void*) {}
+ELECTROBUN_EXPORT void wgpuRunGPUTest(void*) {}
+ELECTROBUN_EXPORT void wgpuCreateAdapterDeviceMainThread(void*, void*, void*) {}
+#endif // ELECTROBUN_ENABLE_WGPU
 
 ELECTROBUN_EXPORT void loadHTMLInWebView(AbstractView* abstractView, const char* htmlString) {
     if (abstractView && htmlString) {

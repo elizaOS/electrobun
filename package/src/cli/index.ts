@@ -17,7 +17,7 @@ import {
 } from "fs";
 import { execSync } from "child_process";
 import * as readline from "readline";
-import { OS, ARCH } from "../shared/platform";
+import { OS, ARCH, type SupportedArch } from "../shared/platform";
 import { DEFAULT_CEF_VERSION_STRING } from "../shared/cef-version";
 import { BUN_VERSION } from "../shared/bun-version";
 import { ELECTROBUN_VERSION } from "../shared/electrobun-version";
@@ -112,7 +112,7 @@ const RCEDIT_DEP_PATH = resolveRceditDir();
 // Function to get platform-specific paths
 function getPlatformPaths(
 	targetOS: "macos" | "win" | "linux",
-	targetArch: "arm64" | "x64",
+	targetArch: SupportedArch,
 ) {
 	const binExt = targetOS === "win" ? ".exe" : "";
 	const platformDistDir = join(
@@ -172,12 +172,13 @@ function getVendoredZigBinaryPath(): string {
 
 function getZigTarget(
 	targetOS: "macos" | "win" | "linux",
-	targetArch: "arm64" | "x64",
+	targetArch: SupportedArch,
 ): string {
 	if (targetOS === "win") {
 		return "x86_64-windows";
 	}
 	if (targetOS === "linux") {
+		if (targetArch === "riscv64") return "riscv64-linux";
 		return targetArch === "arm64" ? "aarch64-linux" : "x86_64-linux";
 	}
 	return targetArch === "arm64" ? "aarch64-macos" : "x86_64-macos";
@@ -202,7 +203,7 @@ async function buildZigMainExecutable(options: {
 	entrypoint: string;
 	buildFolder: string;
 	targetOS: "macos" | "win" | "linux";
-	targetArch: "arm64" | "x64";
+	targetArch: SupportedArch;
 	buildEnvironment: "dev" | "canary" | "stable";
 }) {
 	const zigBinary = getVendoredZigBinaryPath();
@@ -292,7 +293,7 @@ pub fn build(b: *std.Build) void {
 
 async function ensureCoreDependencies(
 	targetOS?: "macos" | "win" | "linux",
-	targetArch?: "arm64" | "x64",
+	targetArch?: SupportedArch,
 ) {
 	// Use provided target platform or default to host platform
 	const platformOS = targetOS || OS;
@@ -514,7 +515,7 @@ async function ensureCoreDependencies(
  */
 function getEffectiveCEFDir(
 	platformOS: "macos" | "win" | "linux",
-	platformArch: "arm64" | "x64",
+	platformArch: SupportedArch,
 	cefVersion?: string,
 ): string {
 	if (cefVersion) {
@@ -529,7 +530,7 @@ function getEffectiveCEFDir(
  */
 function getEffectiveWGPUDir(
 	platformOS: "macos" | "win" | "linux",
-	platformArch: "arm64" | "x64",
+	platformArch: SupportedArch,
 ): string {
 	return join(
 		projectRoot,
@@ -629,7 +630,7 @@ async function trimICUData(
  */
 async function ensureBunBinary(
 	targetOS: "macos" | "win" | "linux",
-	targetArch: "arm64" | "x64",
+	targetArch: SupportedArch,
 	bunVersion?: string,
 	bunnyBun?: string,
 ): Promise<string> {
@@ -677,8 +678,14 @@ async function ensureBunBinary(
 async function downloadCustomBun(
 	bunVersion: string,
 	platformOS: "macos" | "win" | "linux",
-	platformArch: "arm64" | "x64",
+	platformArch: SupportedArch,
 ) {
+	if (platformArch === "riscv64") {
+		throw new Error(
+			"Custom oven-sh Bun release downloads are not available for riscv64; use bunnyBun or ELECTROBUN_BUN_PATH.",
+		);
+	}
+
 	// Map to GitHub release asset names
 	let bunUrlSegment: string;
 	let bunDirName: string;
@@ -831,7 +838,7 @@ async function downloadCustomBun(
 async function downloadBunnyBun(
 	releaseTag: string,
 	platformOS: "macos" | "win" | "linux",
-	platformArch: "arm64" | "x64",
+	platformArch: SupportedArch,
 ) {
 	let assetName: string;
 	let dirName: string;
@@ -844,8 +851,14 @@ async function downloadBunnyBun(
 		assetName = platformArch === "arm64" ? "bun-darwin-arm64.zip" : "bun-darwin-x64.zip";
 		dirName = platformArch === "arm64" ? "bun-darwin-arm64" : "bun-darwin-x64";
 	} else {
-		assetName = platformArch === "arm64" ? "bun-linux-arm64.zip" : "bun-linux-x64.zip";
-		dirName = platformArch === "arm64" ? "bun-linux-arm64" : "bun-linux-x64";
+		if (platformArch === "riscv64") {
+			assetName = "bun-linux-riscv64.zip";
+			dirName = "bun-linux-riscv64";
+		} else {
+			assetName =
+				platformArch === "arm64" ? "bun-linux-arm64.zip" : "bun-linux-x64.zip";
+			dirName = platformArch === "arm64" ? "bun-linux-arm64" : "bun-linux-x64";
+		}
 	}
 
 	const binExt = platformOS === "win" ? ".exe" : "";
@@ -942,7 +955,7 @@ async function downloadBunnyBun(
 
 async function ensureCEFDependencies(
 	targetOS?: "macos" | "win" | "linux",
-	targetArch?: "arm64" | "x64",
+	targetArch?: SupportedArch,
 	cefVersion?: string,
 ): Promise<string> {
 	// Use provided target platform or default to host platform
@@ -1251,7 +1264,7 @@ async function ensureCEFDependencies(
 
 async function ensureWGPUDependencies(
 	targetOS?: "macos" | "win" | "linux",
-	targetArch?: "arm64" | "x64",
+	targetArch?: SupportedArch,
 	wgpuVersion?: string,
 ): Promise<string> {
 	const platformOS = targetOS || OS;
@@ -1422,7 +1435,7 @@ async function ensureWGPUDependencies(
 async function downloadAndExtractCustomCEF(
 	cefVersion: string,
 	platformOS: "macos" | "win" | "linux",
-	platformArch: "arm64" | "x64",
+	platformArch: SupportedArch,
 ) {
 	// Parse "CEF_VERSION+chromium-CHROMIUM_VERSION"
 	const match = cefVersion.match(/^(.+)\+chromium-(.+)$/);

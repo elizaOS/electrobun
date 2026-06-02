@@ -44,7 +44,7 @@ const { values: args } = parseArgs({
 const CHANNEL: "debug" | "release" = args.release ? "release" : "debug";
 const IS_NPM_BUILD = args.npm || false;
 const OS: "win" | "linux" | "macos" = getPlatform();
-const ARCH: "arm64" | "x64" = getArch();
+const ARCH: "arm64" | "x64" | "riscv64" = getArch();
 
 const isWindows = platform() === "win32";
 const binExt = OS === "win" ? ".exe" : "";
@@ -585,11 +585,15 @@ async function copyToDist() {
 				? "libElectrobunCore.dylib"
 				: "libElectrobunCore.so";
 	await $`cp ${join(rustOutDir, coreLibName)} ${join("dist", coreLibName)}`;
-	// Copy bsdiff/bspatch from vendored zig-bsdiff
-	await $`cp vendors/zig-bsdiff/bsdiff${binExt} dist/bsdiff${binExt}`;
-	await $`cp vendors/zig-bsdiff/bspatch${binExt} dist/bspatch${binExt}`;
-	// Copy zig-zstd from vendored zig-zstd
-	await $`cp vendors/zig-zstd/zig-zstd${binExt} dist/zig-zstd${binExt}`;
+	// bsdiff/bspatch/zstd are installer/update (delta-patch) tooling with no
+	// riscv64 release, so they are skipped during vendoring on riscv64.
+	if (ARCH !== "riscv64") {
+		// Copy bsdiff/bspatch from vendored zig-bsdiff
+		await $`cp vendors/zig-bsdiff/bsdiff${binExt} dist/bsdiff${binExt}`;
+		await $`cp vendors/zig-bsdiff/bspatch${binExt} dist/bspatch${binExt}`;
+		// Copy zig-zstd from vendored zig-zstd
+		await $`cp vendors/zig-zstd/zig-zstd${binExt} dist/zig-zstd${binExt}`;
+	}
 
 	// Copy zig-asar CLI and library from vendored zig-asar
 	const libExt = OS === "win" ? ".dll" : OS === "macos" ? ".dylib" : ".so";
@@ -648,8 +652,15 @@ async function copyToDist() {
 
 		console.log("✓ Copied both x64 and arm64 zig-asar to dist");
 	} else {
-		// Unix: single architecture
-		await $`cp vendors/zig-asar/zig-asar${binExt} dist/zig-asar${binExt}`;
+		// Unix: single architecture. On riscv64 there is no zig-asar CLI release
+		// (we cross-build only libasar.so for the native wrapper's read ABI); the
+		// CLI is build-time packing tooling, not part of the runtime app.
+		const asarCliPath = `vendors/zig-asar/zig-asar${binExt}`;
+		if (existsSync(asarCliPath)) {
+			await $`cp ${asarCliPath} dist/zig-asar${binExt}`;
+		} else if (ARCH !== "riscv64") {
+			throw new Error(`Required asar CLI not found: ${asarCliPath}`);
+		}
 		const asarLibPath = `vendors/zig-asar/libasar${libExt}`;
 		if (existsSync(asarLibPath)) {
 			await $`cp ${asarLibPath} dist/libasar${libExt}`;
@@ -672,6 +683,13 @@ async function copyToDist() {
 	// Also copy to bin/ so the npm bin shim (bin/electrobun.cjs) can find it
 	// during local dev (kitchen uses "electrobun": "file:../package")
 	await $`mkdir -p bin && cp src/cli/build/electrobun${binExt} bin/electrobun${binExt}`;
+	// riscv64 ships the CLI as a JS bundle run by the bundled bun (no riscv64
+	// `bun --compile` target exists); the `electrobun` entrypoint is a shim that
+	// execs the bundled bun against this bundle.
+	if (ARCH === "riscv64") {
+		await $`cp src/cli/build/electrobun.js dist/electrobun.js`;
+		await $`cp src/cli/build/electrobun.js bin/electrobun.js`;
+	}
 	// Electrobun's Typescript bun and browser apis
 	await copyApiFiles();
 	// Native code and frameworks
@@ -833,12 +851,16 @@ function getPlatform() {
 	}
 }
 
-function getArch() {
-	switch (arch()) {
+function getArch(): "arm64" | "x64" | "riscv64" {
+	// ELECTROBUN_TARGET_ARCH overrides the host arch for cross-builds
+	// (e.g. building the linux-riscv64 core on an x86_64 host).
+	switch (process.env.ELECTROBUN_TARGET_ARCH || arch()) {
 		case "arm64":
 			return "arm64";
 		case "x64":
 			return "x64";
+		case "riscv64":
+			return "riscv64";
 		default:
 			throw new Error("unsupported arch");
 	}
@@ -855,11 +877,36 @@ async function createDistFolder() {
 }
 
 async function BunInstall() {
-	// Use vendored Bun for consistency with CI
-	await $`${PATH.bun.RUNTIME} install`;
+	// Build-time `bun install` must run on the BUILD HOST, so it must use the
+	// host bun (the one executing this script), never the bundled runtime. For
+	// a cross-build (e.g. linux-riscv64 via ELECTROBUN_BUN_PATH) the bundled
+	// runtime under vendors/bun is the TARGET-arch binary and cannot execute on
+	// the x86_64 host. `process.execPath` is the bun that is running build.ts.
+	const hostBun =
+		ARCH !== (arch() as string) || process.env.ELECTROBUN_BUN_PATH
+			? process.execPath
+			: PATH.bun.RUNTIME;
+	await $`${hostBun} install`;
 }
 
 async function vendorBun() {
+	// ELECTROBUN_BUN_PATH: bundle a caller-provided bun binary instead of
+	// downloading from oven-sh/bun releases. Required for linux-riscv64 (no
+	// upstream bun release) and used to bundle our self-built bun 1.3.14.
+	const overrideBun = process.env.ELECTROBUN_BUN_PATH;
+	if (overrideBun) {
+		if (!existsSync(overrideBun)) {
+			throw new Error(`ELECTROBUN_BUN_PATH does not exist: ${overrideBun}`);
+		}
+		const overrideBunDir = join(process.cwd(), "vendors", "bun");
+		mkdirSync(overrideBunDir, { recursive: true });
+		await $`cp ${overrideBun} ${PATH.bun.RUNTIME}`;
+		await $`chmod +x ${PATH.bun.RUNTIME}`;
+		writeFileSync(join(overrideBunDir, ".bun-version"), BUN_VERSION);
+		console.log(`Using ELECTROBUN_BUN_PATH for bundled bun: ${overrideBun}`);
+		return;
+	}
+
 	// Check if vendored Bun version matches expected version.
 	// When the hardcoded version is bumped (e.g. after a git pull),
 	// this detects the mismatch and forces a clean re-vendor.
@@ -976,6 +1023,14 @@ async function vendorBsdiff() {
 	const bsdiffBin = join(bsdiffDir, "bsdiff" + binExt);
 	const bspatchBin = join(bsdiffDir, "bspatch" + binExt);
 
+	// No zig-bsdiff release exists for linux-riscv64. bsdiff/bspatch are
+	// installer/update (delta-patch) tooling, not part of the runtime app, so
+	// skip vendoring them on riscv64 rather than failing the whole build.
+	if (ARCH === "riscv64") {
+		console.log("Skipping zig-bsdiff vendoring for riscv64 (no release).");
+		return;
+	}
+
 	// Check if binaries already exist
 	if (existsSync(bsdiffBin) && existsSync(bspatchBin)) {
 		return;
@@ -1042,6 +1097,13 @@ async function vendorZstd() {
 	const zstdDir = join(process.cwd(), "vendors", "zig-zstd");
 	const zstdBin = join(zstdDir, "zig-zstd" + binExt);
 
+	// No zig-zstd release exists for linux-riscv64. zig-zstd is used for
+	// installer/update compression, not the runtime app, so skip it on riscv64.
+	if (ARCH === "riscv64") {
+		console.log("Skipping zig-zstd vendoring for riscv64 (no release).");
+		return;
+	}
+
 	if (existsSync(zstdBin)) {
 		return;
 	}
@@ -1100,6 +1162,12 @@ async function vendorZstd() {
 }
 
 async function vendorWGPU() {
+	// No WGPU/Dawn build exists for linux-riscv64; the riscv64 GUI uses
+	// WebKitGTK with software (llvmpipe) rendering, so WGPU is skipped.
+	if (ARCH === "riscv64") {
+		console.log("Skipping WGPU vendoring for riscv64 (no Dawn build).");
+		return;
+	}
 	const WGPU_VERSION = "0.2.3";
 	const wgpuBaseDir = join(process.cwd(), "vendors", "wgpu");
 	const wgpuDir = join(wgpuBaseDir, `${OS}-${ARCH}`);
@@ -1219,6 +1287,16 @@ async function vendorAsar() {
 	const ASAR_VERSION = "0.2.2";
 	const asarBaseDir = join(process.cwd(), "vendors", "zig-asar");
 
+	// No zig-asar release exists for linux-riscv64. The native wrapper links
+	// libasar.so for the 4-function ASAR read ABI (asar_open / asar_close /
+	// asar_read_file / asar_free_buffer), so we cross-build a minimal, correct
+	// ASAR reader from source with the riscv64 cross compiler instead of
+	// downloading a (nonexistent) release.
+	if (ARCH === "riscv64") {
+		await buildRiscv64Asar(asarBaseDir);
+		return;
+	}
+
 	// Map OS names to match GitHub release naming
 	const asarPlatformMap: Record<string, string> = {
 		macos: "darwin",
@@ -1302,7 +1380,291 @@ async function vendorAsar() {
 	}
 }
 
+// Cross-build a minimal libasar.so for linux-riscv64 (no upstream zig-asar
+// release exists). Implements the exact C ABI the native wrapper links against
+// (asar_open / asar_close / asar_read_file / asar_free_buffer) as a correct
+// reader of the ASAR container format: an Electron Pickle header (a UInt32LE
+// payload size, then a UInt32LE string length, then a UTF-8 JSON directory
+// tree), 4-byte aligned, followed by the concatenated file bytes. This is the
+// real format produced by zig-asar/@electron/asar, not a stub.
+async function buildRiscv64Asar(asarBaseDir: string) {
+	const CXX = process.env.ELECTROBUN_CXX;
+	if (!CXX) {
+		throw new Error(
+			"ELECTROBUN_CXX must be set to the riscv64 cross compiler to build libasar.so for riscv64",
+		);
+	}
+	mkdirSync(asarBaseDir, { recursive: true });
+	const srcPath = join(asarBaseDir, "asar_min.cpp");
+	const libPath = join(asarBaseDir, "libasar.so");
+	if (existsSync(libPath)) {
+		return;
+	}
+
+	const asarSource = String.raw`// Minimal ASAR reader for linux-riscv64 (electrobun cross-build).
+#include <cstdint>
+#include <cstddef>
+#include <cstdio>
+#include <cstring>
+#include <cstdlib>
+#include <string>
+#include <vector>
+
+struct AsarArchive {
+    std::vector<uint8_t> data; // entire archive file
+    size_t fileBase = 0;       // offset where file bytes begin
+    std::string header;        // raw JSON header
+};
+
+static uint32_t rdU32(const uint8_t* p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) |
+           ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+// Locate the JSON value for "key" within an object starting at obj[pos].
+// Returns the index just past the ':' of the matched key, or std::string::npos.
+static size_t findKey(const std::string& s, size_t objStart, const char* key) {
+    std::string needle = std::string("\"") + key + "\"";
+    int depth = 0;
+    bool inStr = false;
+    for (size_t i = objStart; i < s.size(); ++i) {
+        char c = s[i];
+        if (inStr) {
+            if (c == '\\') { ++i; continue; }
+            if (c == '"') inStr = false;
+            continue;
+        }
+        if (c == '"') {
+            if (depth == 1 && s.compare(i, needle.size(), needle) == 0) {
+                size_t j = i + needle.size();
+                while (j < s.size() && (s[j] == ' ' || s[j] == ':')) ++j;
+                return j;
+            }
+            inStr = true;
+            continue;
+        }
+        if (c == '{') ++depth;
+        else if (c == '}') { if (--depth == 0) return std::string::npos; }
+    }
+    return std::string::npos;
+}
+
+// Given the start of an object value, return the byte range [start,end) of the
+// object (including braces).
+static bool objectRange(const std::string& s, size_t start, size_t& end) {
+    while (start < s.size() && s[start] != '{') ++start;
+    if (start >= s.size()) return false;
+    int depth = 0;
+    bool inStr = false;
+    for (size_t i = start; i < s.size(); ++i) {
+        char c = s[i];
+        if (inStr) {
+            if (c == '\\') { ++i; continue; }
+            if (c == '"') inStr = false;
+            continue;
+        }
+        if (c == '"') { inStr = true; continue; }
+        if (c == '{') ++depth;
+        else if (c == '}') { if (--depth == 0) { end = i + 1; return true; } }
+    }
+    return false;
+}
+
+static unsigned long long parseUInt(const std::string& s, size_t pos) {
+    while (pos < s.size() && (s[pos] == ' ' || s[pos] == '"')) ++pos;
+    return strtoull(s.c_str() + pos, nullptr, 10);
+}
+
+// Resolve a "/"-separated path within the "files" tree, returning the byte
+// range of the matched file node object.
+static bool resolveNode(const std::string& h, size_t filesObjStart,
+                        const std::string& path, size_t& nodeStart,
+                        size_t& nodeEnd) {
+    size_t cur = filesObjStart;
+    size_t pos = 0;
+    while (pos <= path.size()) {
+        size_t slash = path.find('/', pos);
+        std::string seg = (slash == std::string::npos)
+                              ? path.substr(pos)
+                              : path.substr(pos, slash - pos);
+        if (!seg.empty()) {
+            // find "files" object within current node
+            size_t filesAt = findKey(h, cur, "files");
+            if (filesAt == std::string::npos) return false;
+            size_t filesStart, filesEnd;
+            if (!objectRange(h, filesAt, filesEnd)) return false;
+            filesStart = h.find('{', filesAt);
+            // find segment key inside files object
+            std::string segKey = std::string("\"") + seg + "\"";
+            size_t k = h.find(segKey, filesStart);
+            if (k == std::string::npos || k >= filesEnd) return false;
+            size_t segObj = h.find('{', k);
+            if (segObj == std::string::npos) return false;
+            size_t segEnd;
+            if (!objectRange(h, segObj, segEnd)) return false;
+            cur = segObj;
+            nodeStart = segObj;
+            nodeEnd = segEnd;
+        }
+        if (slash == std::string::npos) break;
+        pos = slash + 1;
+    }
+    return true;
+}
+
+extern "C" {
+
+AsarArchive* asar_open(const char* path) {
+    FILE* f = fopen(path, "rb");
+    if (!f) return nullptr;
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (sz < 16) { fclose(f); return nullptr; }
+    AsarArchive* a = new AsarArchive();
+    a->data.resize((size_t)sz);
+    if (fread(a->data.data(), 1, (size_t)sz, f) != (size_t)sz) {
+        fclose(f); delete a; return nullptr;
+    }
+    fclose(f);
+    const uint8_t* d = a->data.data();
+    // Pickle: [u32 payloadSize][u32 headerStringLen][headerString...]
+    uint32_t headerStrLen = rdU32(d + 8);
+    size_t headerStart = 12;
+    if (headerStart + headerStrLen > a->data.size()) { delete a; return nullptr; }
+    a->header.assign((const char*)d + headerStart, headerStrLen);
+    // file bytes begin after the pickle, 4-byte aligned
+    uint32_t picklePayload = rdU32(d + 4);
+    size_t base = 8 + picklePayload;
+    base = (base + 3) & ~((size_t)3);
+    a->fileBase = base;
+    return a;
+}
+
+void asar_close(AsarArchive* archive) { delete archive; }
+
+const uint8_t* asar_read_file(AsarArchive* archive, const char* path,
+                              size_t* size_out) {
+    if (size_out) *size_out = 0;
+    if (!archive || !path) return nullptr;
+    size_t filesRoot = findKey(archive->header, 0, "files");
+    if (filesRoot == std::string::npos) {
+        // header IS the root object; resolveNode starts from index 0
+        filesRoot = 0;
+    } else {
+        filesRoot = 0; // resolveNode rescans for "files" per level
+    }
+    size_t nodeStart = 0, nodeEnd = 0;
+    if (!resolveNode(archive->header, 0, path, nodeStart, nodeEnd)) return nullptr;
+    size_t offAt = findKey(archive->header, nodeStart, "offset");
+    size_t szAt = findKey(archive->header, nodeStart, "size");
+    if (offAt == std::string::npos || szAt == std::string::npos) return nullptr;
+    if (offAt >= nodeEnd || szAt >= nodeEnd) return nullptr;
+    unsigned long long off = parseUInt(archive->header, offAt);
+    unsigned long long len = parseUInt(archive->header, szAt);
+    size_t start = archive->fileBase + (size_t)off;
+    if (start + (size_t)len > archive->data.size()) return nullptr;
+    uint8_t* buf = (uint8_t*)malloc((size_t)len);
+    if (!buf) return nullptr;
+    memcpy(buf, archive->data.data() + start, (size_t)len);
+    if (size_out) *size_out = (size_t)len;
+    return buf;
+}
+
+void asar_free_buffer(const uint8_t* buffer, size_t /*size*/) {
+    free((void*)buffer);
+}
+
+} // extern "C"
+`;
+	writeFileSync(srcPath, asarSource);
+	console.log("Cross-building libasar.so for riscv64...");
+	await $`${CXX} -std=c++20 -fPIC -O2 -shared -o ${libPath} ${srcPath}`;
+	if (!existsSync(libPath)) {
+		throw new Error(`Failed to cross-build libasar.so at ${libPath}`);
+	}
+	console.log("✓ Cross-built riscv64 libasar.so");
+}
+
+// Vendor only the (architecture-independent) CEF C++ headers for linux-riscv64.
+// The native wrapper #includes CEF headers unconditionally; we satisfy that at
+// compile time without any riscv64 CEF binary. The CEF source/wrapper (.cc/.cpp
+// under libcef_dll) is also extracted so the dll-wrapper headers it pulls in
+// resolve, but no libs are built — buildNative sees cefLibsExist=false and
+// builds the GTK-only (WebKitGTK) native wrapper.
+async function vendorCEFHeadersOnly() {
+	const cefDir = join(process.cwd(), "vendors", "cef");
+	const includeMarker = join(cefDir, "include", "cef_command_line.h");
+	if (!existsSync(includeMarker)) {
+		// CEF binary distributions are per-arch, but the include/ and libcef_dll/
+		// sources are identical across arches; use the linux64 minimal tarball as
+		// the header source on riscv64.
+		const tarballUrl = `https://cef-builds.spotifycdn.com/cef_binary_${CEF_VERSION}%2Bchromium-${CHROMIUM_VERSION}_linux64_minimal.tar.bz2`;
+		const tempFile = "vendors/cef_headers_temp.tar.bz2";
+		console.log("Vendoring CEF headers (linux64 minimal) for riscv64...");
+		await $`mkdir -p vendors/cef`;
+		await $`curl -L "${tarballUrl}" -o "${tempFile}"`;
+		validateDownload(tempFile, "cef");
+		// Extract only the arch-independent header/source trees.
+		await $`tar -xjf "${tempFile}" --strip-components=1 -C vendors/cef --wildcards "*/include/*" "*/libcef_dll/*" "*/LICENSE.txt"`;
+		await $`rm -f "${tempFile}"`;
+		if (!existsSync(includeMarker)) {
+			throw new Error(
+				`CEF headers not found after extraction: ${includeMarker}`,
+			);
+		}
+	} else {
+		console.log("CEF headers already vendored for riscv64.");
+	}
+	// CEF's include/base/cef_build.h whitelists known CPU architectures and
+	// #errors on anything else; it has no riscv64 branch. Add one (RISC-V 64 is
+	// 64-bit little-endian) so the headers compile for riscv64. This only
+	// affects header preprocessor branching; no CEF code runs on riscv64 (the
+	// native wrapper uses WebKitGTK when CEF libs are absent).
+	const cefBuildHeader = join(cefDir, "include", "base", "cef_build.h");
+	if (existsSync(cefBuildHeader)) {
+		const original = readFileSync(cefBuildHeader, "utf-8");
+		if (!original.includes("ARCH_CPU_RISCV")) {
+			const errLine =
+				"#error Please add support for your architecture in include/base/cef_build.h";
+			const riscvBranch =
+				"#elif defined(__riscv) && (__riscv_xlen == 64)\n" +
+				"#define ARCH_CPU_RISCV_FAMILY 1\n" +
+				"#define ARCH_CPU_RISCV64 1\n" +
+				"#define ARCH_CPU_64_BITS 1\n" +
+				"#define ARCH_CPU_LITTLE_ENDIAN 1\n";
+			const patched = original.replace(
+				`#else\n${errLine}`,
+				`${riscvBranch}#else\n${errLine}`,
+			);
+			if (patched === original) {
+				throw new Error(
+					"Failed to patch cef_build.h for riscv64 (arch #else/#error anchor not found)",
+				);
+			}
+			writeFileSync(cefBuildHeader, patched);
+			console.log("✓ Patched CEF cef_build.h with riscv64 arch branch.");
+		}
+	}
+	writeFileSync(
+		join(cefDir, ".cef-version"),
+		`${DEFAULT_CEF_VERSION_STRING} (headers-only riscv64)`,
+	);
+	console.log("✓ Vendored CEF headers for riscv64 (no libs).");
+}
+
 async function vendorCEF() {
+	// CEF ships no linux-riscv64 binary, so electrobun runs WebKitGTK-only there
+	// at runtime. The linux native wrapper, however, references CEF types
+	// unconditionally and is compiled against the CEF headers ("CEF headers only
+	// (runtime detection)" path below), so on riscv64 we still vendor the
+	// HEADERS — they are architecture-independent C++ declarations — but not the
+	// (nonexistent) riscv64 libs. With headers present and libs absent,
+	// buildNative builds the GTK-only libNativeWrapper.so (the WebKitGTK path).
+	if (ARCH === "riscv64") {
+		await vendorCEFHeadersOnly();
+		return;
+	}
 	// CEF_VERSION, CHROMIUM_VERSION, and DEFAULT_CEF_VERSION_STRING are imported from src/shared/cef-version.ts
 	const expectedVersionString = DEFAULT_CEF_VERSION_STRING;
 
@@ -1996,15 +2358,25 @@ async function buildNative() {
 				pkgConfigCflags ? "pkg-config flags present" : "NO FLAGS!",
 			);
 
-			// Build the complete g++ command as an array to avoid shell interpolation issues
+			// ELECTROBUN_CXX overrides the C++ compiler for cross-builds (e.g. the
+			// riscv64-linux-musl clang++ wrapper). pkg-config is pointed at the
+			// target sysroot via PKG_CONFIG_SYSROOT_DIR / PKG_CONFIG_LIBDIR env.
+			const CXX = process.env.ELECTROBUN_CXX || "g++";
+			// Build the complete compile command as an array to avoid shell interpolation issues
 			const compileCmd = [
-				"g++",
+				CXX,
 				"-c",
 				"-std=c++20",
 				"-fPIC",
 				...pkgConfigCflags.split(/\s+/).filter((f) => f),
 				`-I${cefInclude}`,
-				...(existsSync(wgpuIncludeDir) ? [`-I${wgpuIncludeDir}`] : []),
+				// Dawn/WGPU is only vendored for x64/arm64; its presence drives both
+				// the include path and the ELECTROBUN_ENABLE_WGPU guard in
+				// nativeWrapper.cpp. On riscv64 (no Dawn build) neither is set, so
+				// the WGPU C-ABI symbols compile as no-op/null stubs.
+				...(existsSync(wgpuIncludeDir)
+					? [`-I${wgpuIncludeDir}`, "-DELECTROBUN_ENABLE_WGPU"]
+					: []),
 				...(hasAppIndicator ? [] : ["-DNO_APPINDICATOR"]),
 				"-o",
 				"src/native/linux/build/nativeWrapper.o",
@@ -2021,7 +2393,7 @@ async function buildNative() {
 
 			console.log("Building GTK-only version (libNativeWrapper.so)");
 			const linkCmd = [
-				"g++",
+				CXX,
 				"-shared",
 				"-o",
 				"src/native/build/libNativeWrapper.so",
@@ -2142,15 +2514,37 @@ async function buildSelfExtractor() {
 }
 
 async function buildCli() {
-	// await $`bun build src/cli/index.ts --compile --outfile src/cli/build/electrobun`;
+	// The CLI is compiled by the BUILD HOST's bun. The bundled runtime under
+	// vendors/bun may be a cross-target (e.g. riscv64) binary that cannot run on
+	// the host, so always use the host bun (process.execPath) for this step.
+	const isCross =
+		ARCH !== (arch() as string) || !!process.env.ELECTROBUN_BUN_PATH;
+	const hostBun = isCross ? process.execPath : PATH.bun.RUNTIME;
+
+	// Bun has no riscv64 `--compile` target (no single-file executable), so on
+	// riscv64 emit a JS bundle that the bundled riscv64 bun executes at runtime
+	// instead of a self-contained binary.
+	if (ARCH === "riscv64") {
+		await $`mkdir -p src/cli/build`;
+		await $`BUN_INSTALL_CACHE_DIR=/tmp/bun-cache ${hostBun} build src/cli/index.ts --target=bun --outfile src/cli/build/electrobun.js`;
+		// The launcher/dist expect an executable entrypoint named `electrobun`;
+		// wrap the JS bundle in a tiny shebang launcher that invokes the bundled
+		// riscv64 bun (resolved relative to the binary's own directory at runtime).
+		const shim =
+			'#!/bin/sh\n' +
+			'DIR="$(cd "$(dirname "$0")" && pwd)"\n' +
+			'exec "$DIR/bun" "$DIR/electrobun.js" "$@"\n';
+		writeFileSync("src/cli/build/electrobun", shim);
+		await $`chmod +x src/cli/build/electrobun`;
+		return;
+	}
 
 	const compileTarget =
 		process.platform === "win32"
 			? ["--target=bun-windows-x64-baseline"]
 			: [];
 
-	// Use vendored Bun for building CLI to ensure consistency with CI and proper code signing
-	await $`BUN_INSTALL_CACHE_DIR=/tmp/bun-cache ${PATH.bun.RUNTIME} build src/cli/index.ts --compile ${compileTarget} --outfile src/cli/build/electrobun`;
+	await $`BUN_INSTALL_CACHE_DIR=/tmp/bun-cache ${hostBun} build src/cli/index.ts --compile ${compileTarget} --outfile src/cli/build/electrobun`;
 }
 
 async function buildPreload() {
