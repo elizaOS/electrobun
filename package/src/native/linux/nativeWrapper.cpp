@@ -3504,7 +3504,19 @@ public:
             
             return TRUE;
         }
-        
+
+        // WebXR (immersive-vr / immersive-ar) session permission. WebKitGTK ships
+        // WebXR (default-on, backed by OpenXR); a session start raises this
+        // request, and if it isn't handled it falls through to the generic dialog
+        // below (or is denied) and the immersive session never starts. The
+        // Electrobun shell is a trusted first-party app, so grant it directly
+        // (like getUserMedia) — the OS/OpenXR runtime still gates real hardware.
+        if (WEBKIT_IS_XR_PERMISSION_REQUEST(request)) {
+            webkit_permission_request_allow(request);
+            printf("[electrobun] granted WebXR session permission\n");
+            return TRUE;
+        }
+
         // For other permission types (geolocation, notifications, etc.)
         std::string message = "This page is requesting additional permissions.\n\nDo you want to allow this?";
         std::string title = "Permission Request";
