@@ -7226,14 +7226,12 @@ ELECTROBUN_EXPORT void hideWindow(void* window) {
     }
 }
 
-// Cross-platform compatible function for Linux - return dummy style mask
-ELECTROBUN_EXPORT uint32_t getWindowStyle(bool borderless, bool titled, bool closable, bool miniaturizable,
-                        bool resizable, bool unifiedTitleAndToolbar, bool fullScreen,
-                        bool fullSizeContentView, bool utilityWindow, bool docModalWindow,
-                        bool nonactivatingPanel, bool hudWindow) {
-    // Linux doesn't use style masks like macOS, so just return a dummy value
-    // The actual window styling is handled in createWindow
-    return 0;
+// Linux styles windows in GTK createWindow, not via a style mask (see the
+// package CLAUDE.md, gap G6), so the packed flags pass through unused. Single
+// u32 argument to match the reworked cross-platform signature (Bun's arm64 FFI
+// drops bool args past the register slots).
+ELECTROBUN_EXPORT uint32_t getWindowStyle(uint32_t flags) {
+    return flags;
 }
 
 

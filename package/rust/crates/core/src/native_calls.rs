@@ -230,53 +230,11 @@ pub fn stop_window_move() {
     unsafe { f() }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn get_window_style(
-    borderless: bool,
-    titled: bool,
-    closable: bool,
-    miniaturizable: bool,
-    resizable: bool,
-    unified_title_and_toolbar: bool,
-    full_screen: bool,
-    full_size_content_view: bool,
-    utility_window: bool,
-    doc_modal_window: bool,
-    nonactivating_panel: bool,
-    hud_window: bool,
-) -> u32 {
-    type Fn = unsafe extern "C" fn(
-        bool,
-        bool,
-        bool,
-        bool,
-        bool,
-        bool,
-        bool,
-        bool,
-        bool,
-        bool,
-        bool,
-        bool,
-    ) -> u32;
+pub fn get_window_style(flags: u32) -> u32 {
+    type Fn = unsafe extern "C" fn(u32) -> u32;
     native_fn!(f: Fn = "getWindowStyle" else return 0);
     // SAFETY: signature matches.
-    unsafe {
-        f(
-            borderless,
-            titled,
-            closable,
-            miniaturizable,
-            resizable,
-            unified_title_and_toolbar,
-            full_screen,
-            full_size_content_view,
-            utility_window,
-            doc_modal_window,
-            nonactivating_panel,
-            hud_window,
-        )
-    }
+    unsafe { f(flags) }
 }
 
 // ---- webview ----

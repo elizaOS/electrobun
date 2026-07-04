@@ -117,21 +117,11 @@ const core = (() => {
 				args: [],
 				returns: FFIType.cstring,
 			},
+			// Packed style flags (one u32) rather than 12 bools: Bun's arm64
+			// FFI drops bool arguments past the register slots, which silently
+			// disabled NonactivatingPanel/DocModalWindow/HUDWindow.
 			getWindowStyle: {
-				args: [
-					FFIType.bool,
-					FFIType.bool,
-					FFIType.bool,
-					FFIType.bool,
-					FFIType.bool,
-					FFIType.bool,
-					FFIType.bool,
-					FFIType.bool,
-					FFIType.bool,
-					FFIType.bool,
-					FFIType.bool,
-					FFIType.bool,
-				],
+				args: [FFIType.u32],
 				returns: FFIType.u32,
 			},
 			createWindow: {
@@ -1210,20 +1200,24 @@ const _ffiImpl = {
 				trafficLightOffset = { x: 0, y: 0 },
 			} = params;
 
-			const styleMask = core_.symbols.getWindowStyle(
-				Borderless,
-				Titled,
-				Closable,
-				Miniaturizable,
-				Resizable,
-				UnifiedTitleAndToolbar,
-				FullScreen,
-				FullSizeContentView,
-				UtilityWindow,
-				DocModalWindow,
-				NonactivatingPanel,
-				HUDWindow,
-			);
+			// Pack the flags into one u32 (bit order mirrors
+			// native/shared/window_style_flags.h). Passing 12 separate bools
+			// tripped a Bun arm64 FFI bug that dropped the stack-passed args
+			// (NonactivatingPanel/DocModalWindow/HUDWindow).
+			const styleFlags =
+				(Borderless ? 1 << 0 : 0) |
+				(Titled ? 1 << 1 : 0) |
+				(Closable ? 1 << 2 : 0) |
+				(Miniaturizable ? 1 << 3 : 0) |
+				(Resizable ? 1 << 4 : 0) |
+				(UnifiedTitleAndToolbar ? 1 << 5 : 0) |
+				(FullScreen ? 1 << 6 : 0) |
+				(FullSizeContentView ? 1 << 7 : 0) |
+				(UtilityWindow ? 1 << 8 : 0) |
+				(DocModalWindow ? 1 << 9 : 0) |
+				(NonactivatingPanel ? 1 << 10 : 0) |
+				(HUDWindow ? 1 << 11 : 0);
+			const styleMask = core_.symbols.getWindowStyle(styleFlags);
 
 			const windowId = core_.symbols.createWindow(
 				// frame

@@ -175,38 +175,12 @@ pub extern "C" fn electrobun_core_run_main_thread(
 // window API
 // ============================================================================
 
+// Packed style flags in, platform mask out. A single u32 replaces the former
+// 12 bool arguments because Bun's arm64 FFI drops bool args past the register
+// slots (which silently disabled NonactivatingPanel/DocModalWindow/HUDWindow).
 #[no_mangle]
-#[allow(clippy::too_many_arguments)]
-pub extern "C" fn getWindowStyle(
-    borderless: bool,
-    titled: bool,
-    closable: bool,
-    miniaturizable: bool,
-    resizable: bool,
-    unified_title_and_toolbar: bool,
-    full_screen: bool,
-    full_size_content_view: bool,
-    utility_window: bool,
-    doc_modal_window: bool,
-    nonactivating_panel: bool,
-    hud_window: bool,
-) -> u32 {
-    guard(0, || {
-        native_calls::get_window_style(
-            borderless,
-            titled,
-            closable,
-            miniaturizable,
-            resizable,
-            unified_title_and_toolbar,
-            full_screen,
-            full_size_content_view,
-            utility_window,
-            doc_modal_window,
-            nonactivating_panel,
-            hud_window,
-        )
-    })
+pub extern "C" fn getWindowStyle(flags: u32) -> u32 {
+    guard(0, || native_calls::get_window_style(flags))
 }
 
 #[no_mangle]

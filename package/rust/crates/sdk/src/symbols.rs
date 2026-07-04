@@ -78,9 +78,7 @@ core_symbols! {
         extern "C" fn(*const c_char, *const c_char, *const c_char, c_int) -> c_int;
     configure_webview_runtime: "configureWebviewRuntime" =
         extern "C" fn(u32, *const c_char, *const c_char) -> bool;
-    get_window_style: "getWindowStyle" = extern "C" fn(
-        bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool, bool,
-    ) -> u32;
+    get_window_style: "getWindowStyle" = extern "C" fn(u32) -> u32;
     create_window: "createWindow" = extern "C" fn(
         f64, f64, f64, f64, u32, *const c_char, bool, *const c_char, bool, bool, f64, f64,
         Option<WindowCloseHandler>, Option<WindowMoveHandler>, Option<WindowResizeHandler>,

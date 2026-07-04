@@ -35,7 +35,7 @@ use crate::paths::BundlePaths;
 use crate::symbols::Symbols;
 use crate::types::{
     AppInfo, Cookie, Display, MessageBoxOptions, NotificationOptions, OpenFileDialogOptions, Point,
-    Rect, TrayOptions, WGPUViewOptions, WebviewOptions, WindowOptions,
+    Rect, TrayOptions, WGPUViewOptions, WebviewOptions, WindowOptions, WindowStyle,
 };
 
 /// The platform-specific libElectrobunCore filename.
@@ -147,9 +147,7 @@ impl Core {
 
     /// Compute the default packed window style mask. Mirrors `defaultWindowStyle`.
     pub fn default_window_style(&self) -> u32 {
-        (self.symbols.get_window_style)(
-            false, true, true, true, true, false, false, false, false, false, false, false,
-        )
+        (self.symbols.get_window_style)(WindowStyle::default().packed())
     }
 
     // -- Window lifecycle --------------------------------------------------
@@ -159,21 +157,7 @@ impl Core {
         let title = CString::new(options.title).map_err(nul_err)?;
         let title_bar_style = CString::new(options.title_bar_style).map_err(nul_err)?;
 
-        let style = &options.style;
-        let style_mask = (self.symbols.get_window_style)(
-            style.borderless,
-            style.titled,
-            style.closable,
-            style.miniaturizable,
-            style.resizable,
-            style.unified_title_and_toolbar,
-            style.full_screen,
-            style.full_size_content_view,
-            style.utility_window,
-            style.doc_modal_window,
-            style.nonactivating_panel,
-            style.hud_window,
-        );
+        let style_mask = (self.symbols.get_window_style)(options.style.packed());
 
         let window_id = (self.symbols.create_window)(
             options.frame.x,

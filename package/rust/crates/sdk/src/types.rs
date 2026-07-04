@@ -157,6 +157,53 @@ impl Default for WindowStyle {
     }
 }
 
+impl WindowStyle {
+    /// Pack the flags into the u32 `getWindowStyle` accepts. The bit order
+    /// matches `window_style_flags.h` (native) and the TS packer. A single u32
+    /// is passed instead of 12 bools because Bun's arm64 FFI drops bool
+    /// arguments past the register slots.
+    pub fn packed(&self) -> u32 {
+        let mut flags = 0u32;
+        if self.borderless {
+            flags |= 1 << 0;
+        }
+        if self.titled {
+            flags |= 1 << 1;
+        }
+        if self.closable {
+            flags |= 1 << 2;
+        }
+        if self.miniaturizable {
+            flags |= 1 << 3;
+        }
+        if self.resizable {
+            flags |= 1 << 4;
+        }
+        if self.unified_title_and_toolbar {
+            flags |= 1 << 5;
+        }
+        if self.full_screen {
+            flags |= 1 << 6;
+        }
+        if self.full_size_content_view {
+            flags |= 1 << 7;
+        }
+        if self.utility_window {
+            flags |= 1 << 8;
+        }
+        if self.doc_modal_window {
+            flags |= 1 << 9;
+        }
+        if self.nonactivating_panel {
+            flags |= 1 << 10;
+        }
+        if self.hud_window {
+            flags |= 1 << 11;
+        }
+        flags
+    }
+}
+
 /// Per-window native event callbacks. `None` slots are not installed.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct WindowCallbacks {

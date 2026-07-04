@@ -48,6 +48,7 @@
 
 // Shared cross-platform utilities
 #include "../shared/glob_match.h"
+#include "../shared/window_style_flags.h"
 #include "../shared/callbacks.h"
 #include "../shared/permissions.h"
 #include "../shared/mime_types.h"
@@ -9377,19 +9378,6 @@ ELECTROBUN_EXPORT void testFFI2(void (*completionHandler)()) {
     }
 }
 
-// Window style mask bits (Windows encoding). The mask is opaque to the TS and
-// Rust layers: getWindowStyle (below) produces it and
-// createWindowWithFrameAndStyleFromWorker decodes it, both in this file, so
-// the bit values only need to agree here. UtilityWindow and NonactivatingPanel
-// mirror the macOS NSPanel semantics: no taskbar presence, and (for
-// NonactivatingPanel) no foreground activation on show or click.
-static const uint32_t EB_WIN_STYLE_BORDERLESS = 1u << 0;
-static const uint32_t EB_WIN_STYLE_TITLED = 1u << 1;
-static const uint32_t EB_WIN_STYLE_CLOSABLE = 1u << 2;
-static const uint32_t EB_WIN_STYLE_RESIZABLE = 1u << 3;
-static const uint32_t EB_WIN_STYLE_UTILITY_WINDOW = 1u << 4;
-static const uint32_t EB_WIN_STYLE_NONACTIVATING_PANEL = 1u << 5;
-
 ELECTROBUN_EXPORT HWND createWindowWithFrameAndStyleFromWorker(
     uint32_t windowId,
     double x, double y,
@@ -9462,8 +9450,8 @@ ELECTROBUN_EXPORT HWND createWindowWithFrameAndStyleFromWorker(
             windowExStyle |= WS_EX_LAYERED;
         }
 
-        const bool nonactivatingPanel = (styleMask & EB_WIN_STYLE_NONACTIVATING_PANEL) != 0;
-        const bool utilityWindow = (styleMask & EB_WIN_STYLE_UTILITY_WINDOW) != 0;
+        const bool nonactivatingPanel = (styleMask & EB_STYLE_NONACTIVATING_PANEL) != 0;
+        const bool utilityWindow = (styleMask & EB_STYLE_UTILITY_WINDOW) != 0;
         if (nonactivatingPanel) {
             // Flyout/overlay surfaces (tray popover, bottom pill): never steal
             // foreground activation, keep no taskbar button, stay above normal
@@ -11266,30 +11254,13 @@ extern "C" ELECTROBUN_EXPORT const char* getWebviewHTMLContent(uint32_t webviewI
     }
 }
 
-// Pack the cross-platform style flags into the Windows mask encoding
-// (EB_WIN_STYLE_* bits, decoded by createWindowWithFrameAndStyleFromWorker).
-// Flags with no Win32 equivalent are accepted and ignored.
-ELECTROBUN_EXPORT uint32_t getWindowStyle(
-    bool Borderless,
-    bool Titled,
-    bool Closable,
-    bool Miniaturizable,
-    bool Resizable,
-    bool UnifiedTitleAndToolbar,
-    bool FullScreen,
-    bool FullSizeContentView,
-    bool UtilityWindow,
-    bool DocModalWindow,
-    bool NonactivatingPanel,
-    bool HUDWindow) {
-    uint32_t mask = 0;
-    if (Borderless) mask |= EB_WIN_STYLE_BORDERLESS;
-    if (Titled) mask |= EB_WIN_STYLE_TITLED;
-    if (Closable) mask |= EB_WIN_STYLE_CLOSABLE;
-    if (Resizable) mask |= EB_WIN_STYLE_RESIZABLE;
-    if (UtilityWindow) mask |= EB_WIN_STYLE_UTILITY_WINDOW;
-    if (NonactivatingPanel) mask |= EB_WIN_STYLE_NONACTIVATING_PANEL;
-    return mask;
+// The packed style flags (see window_style_flags.h) pass straight through to
+// createWindowWithFrameAndStyleFromWorker, which decodes the EB_STYLE_* bits it
+// supports (NonactivatingPanel, UtilityWindow). Single u32 argument: Bun's
+// arm64 FFI drops bool args past the register slots. Titles/borders are driven
+// by titleBarStyle on Windows, so no Win32 style is derived here.
+ELECTROBUN_EXPORT uint32_t getWindowStyle(uint32_t flags) {
+    return flags;
 }
 
 } // extern "C"

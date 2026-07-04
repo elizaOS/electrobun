@@ -150,6 +150,17 @@ const broadcastUpdateStatus = () => {
 	testRunnerWindow?.webview.rpc?.send.updateStatus(updateState);
 };
 
+// Manual verification surface for non-activating panels + Carbon global
+// hotkeys (elizaOS/eliza#12184). Usage: PANEL_DEMO=1 electrobun dev
+// Opens a floating non-activating panel (NSPanel on macOS, renderer:
+// "native") with a text input and registers CommandOrControl+Shift+P to
+// toggle it; the CEF test-runner window is skipped so the demo also runs
+// from a directly-launched bundle. Verify: typing in the panel works while
+// the previously-active app keeps menu-bar ownership (no app switch), and
+// the hotkey fires with Accessibility permission revoked without the chord
+// leaking to the focused app.
+const panelDemo = !!process.env["PANEL_DEMO"];
+
 // Register all tests
 executor.registerTests(allTests);
 
@@ -275,38 +286,42 @@ const testRunnerRPC = BrowserView.defineRPC<TestRunnerRPC>({
 	},
 });
 
-// Create the test runner window
-testRunnerWindow = new BrowserWindow({
-	title: "Electrobun Integration Tests",
-	url: "views://test-runner/index.html",
-	renderer: "cef",
-	frame: {
-		width: 1200,
-		height: 800,
-		x: 100,
-		y: 100,
-	},
-	rpc: testRunnerRPC,
-});
-
-// Keep test runner on top so results are visible while tests run
-testRunnerWindow.setAlwaysOnTop(true);
-
-// Send build config and update status to the UI when ready
-testRunnerWindow.webview.on("dom-ready", () => {
-	testRunnerWindow!.webview.rpc?.send.buildConfig({
-		defaultRenderer: buildConfig.defaultRenderer,
-		availableRenderers: buildConfig.availableRenderers,
-		mainProcess: "bun",
-		cefVersion: buildConfig.cefVersion,
-		bunVersion: buildConfig.bunVersion,
+// Create the test runner window (skipped in PANEL_DEMO mode - the demo only
+// needs the native-renderer panel and must run from a directly-launched
+// bundle, where the CEF bootstrap is unavailable)
+if (!panelDemo) {
+	testRunnerWindow = new BrowserWindow({
+		title: "Electrobun Integration Tests",
+		url: "views://test-runner/index.html",
+		renderer: "cef",
+		frame: {
+			width: 1200,
+			height: 800,
+			x: 100,
+			y: 100,
+		},
+		rpc: testRunnerRPC,
 	});
-	// Send current update status
-	testRunnerWindow!.webview.rpc?.send.updateStatus(updateState);
-});
 
-// Check for updates on startup
-checkForUpdate();
+	// Keep test runner on top so results are visible while tests run
+	testRunnerWindow.setAlwaysOnTop(true);
+
+	// Send build config and update status to the UI when ready
+	testRunnerWindow.webview.on("dom-ready", () => {
+		testRunnerWindow!.webview.rpc?.send.buildConfig({
+			defaultRenderer: buildConfig.defaultRenderer,
+			availableRenderers: buildConfig.availableRenderers,
+			mainProcess: "bun",
+			cefVersion: buildConfig.cefVersion,
+			bunVersion: buildConfig.bunVersion,
+		});
+		// Send current update status
+		testRunnerWindow!.webview.rpc?.send.updateStatus(updateState);
+	});
+
+	// Check for updates on startup
+	checkForUpdate();
+}
 
 // Forward test events to the UI
 executor.onEvent((event) => {
@@ -408,14 +423,6 @@ if (autoRunTestName) {
 	}, 2000);
 }
 
-// Manual verification surface for non-activating panels + Carbon global
-// hotkeys (elizaOS/eliza#12184). Usage: PANEL_DEMO=1 electrobun dev
-// Opens a floating non-activating panel (NSPanel on macOS) with a text input
-// and registers CommandOrControl+Shift+P to toggle it. Verify: typing in the
-// panel works while the previously-active app keeps menu-bar ownership (no
-// app switch), and the hotkey fires with Accessibility permission revoked
-// without the chord leaking to the focused app.
-const panelDemo = !!process.env["PANEL_DEMO"];
 if (panelDemo) {
 	const panelHtml = `<!DOCTYPE html>
 <html>
@@ -447,6 +454,13 @@ if (panelDemo) {
 		frame: { x: 200, y: 160, width: 520, height: 190 },
 	});
 
+	panel.on("focus", () =>
+		console.log("[PanelDemo] panel became key window (focus event)"),
+	);
+	panel.on("blur", () =>
+		console.log("[PanelDemo] panel resigned key window (blur event)"),
+	);
+
 	let panelVisible = true;
 	const panelAccelerator = "CommandOrControl+Shift+P";
 	const registered = GlobalShortcut.register(panelAccelerator, () => {
@@ -456,9 +470,6 @@ if (panelDemo) {
 		} else {
 			panel.hide();
 		}
-		console.log(
-			`[PanelDemo] hotkey ${panelAccelerator} -> ${panelVisible ? "show" : "hide"}`,
-		);
 	});
 	console.log(
 		`[PanelDemo] non-activating panel open; hotkey ${panelAccelerator} registered: ${registered}`,

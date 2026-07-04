@@ -79,6 +79,7 @@ static bool wgpuDebugEnabled() {
 #include "../shared/download_event.h"
 #include "../shared/app_paths.h"
 #include "../shared/accelerator_parser.h"
+#include "../shared/window_style_flags.h"
 #include "../shared/chromium_flags.h"
 #include "../shared/cache_migration.h"
 
@@ -644,33 +645,23 @@ bool isCEFAvailable() {
     return [[NSFileManager defaultManager] fileExistsAtPath:frameworkPath];
 }
 
-extern "C" uint32_t getWindowStyle(
-    bool Borderless,
-    bool Titled,
-    bool Closable,
-    bool Miniaturizable,
-    bool Resizable,
-    bool UnifiedTitleAndToolbar,
-    bool FullScreen,
-    bool FullSizeContentView,
-    bool UtilityWindow,
-    bool DocModalWindow,
-    bool NonactivatingPanel,
-    bool HUDWindow
-) {
+// Map the packed style flags (see window_style_flags.h) to the AppKit mask.
+// Single u32 argument: Bun's arm64 FFI drops bool args past the register slots,
+// which silently disabled NonactivatingPanel/DocModalWindow/HUDWindow.
+extern "C" uint32_t getWindowStyle(uint32_t flags) {
     uint32_t mask = 0;
-    if (Borderless) mask |= NSWindowStyleMaskBorderless;
-    if (Titled) mask |= NSWindowStyleMaskTitled;
-    if (Closable) mask |= NSWindowStyleMaskClosable;
-    if (Miniaturizable) mask |= NSWindowStyleMaskMiniaturizable;
-    if (Resizable) mask |= NSWindowStyleMaskResizable;
-    if (UnifiedTitleAndToolbar) mask |= NSWindowStyleMaskUnifiedTitleAndToolbar;
-    if (FullScreen) mask |= NSWindowStyleMaskFullScreen;
-    if (FullSizeContentView) mask |= NSWindowStyleMaskFullSizeContentView;
-    if (UtilityWindow) mask |= NSWindowStyleMaskUtilityWindow;
-    if (DocModalWindow) mask |= NSWindowStyleMaskDocModalWindow;
-    if (NonactivatingPanel) mask |= NSWindowStyleMaskNonactivatingPanel;
-    if (HUDWindow) mask |= NSWindowStyleMaskHUDWindow;
+    if (flags & EB_STYLE_BORDERLESS) mask |= NSWindowStyleMaskBorderless;
+    if (flags & EB_STYLE_TITLED) mask |= NSWindowStyleMaskTitled;
+    if (flags & EB_STYLE_CLOSABLE) mask |= NSWindowStyleMaskClosable;
+    if (flags & EB_STYLE_MINIATURIZABLE) mask |= NSWindowStyleMaskMiniaturizable;
+    if (flags & EB_STYLE_RESIZABLE) mask |= NSWindowStyleMaskResizable;
+    if (flags & EB_STYLE_UNIFIED_TITLE_AND_TOOLBAR) mask |= NSWindowStyleMaskUnifiedTitleAndToolbar;
+    if (flags & EB_STYLE_FULL_SCREEN) mask |= NSWindowStyleMaskFullScreen;
+    if (flags & EB_STYLE_FULL_SIZE_CONTENT_VIEW) mask |= NSWindowStyleMaskFullSizeContentView;
+    if (flags & EB_STYLE_UTILITY_WINDOW) mask |= NSWindowStyleMaskUtilityWindow;
+    if (flags & EB_STYLE_DOC_MODAL_WINDOW) mask |= NSWindowStyleMaskDocModalWindow;
+    if (flags & EB_STYLE_NONACTIVATING_PANEL) mask |= NSWindowStyleMaskNonactivatingPanel;
+    if (flags & EB_STYLE_HUD_WINDOW) mask |= NSWindowStyleMaskHUDWindow;
     return mask;
 }
 

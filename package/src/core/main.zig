@@ -1823,50 +1823,13 @@ export fn electrobun_core_run_main_thread(
     return 0;
 }
 
-export fn getWindowStyle(
-    borderless: bool,
-    titled: bool,
-    closable: bool,
-    miniaturizable: bool,
-    resizable: bool,
-    unified_title_and_toolbar: bool,
-    full_screen: bool,
-    full_size_content_view: bool,
-    utility_window: bool,
-    doc_modal_window: bool,
-    nonactivating_panel: bool,
-    hud_window: bool,
-) u32 {
-    const GetWindowStyleFn = *const fn (
-        bool,
-        bool,
-        bool,
-        bool,
-        bool,
-        bool,
-        bool,
-        bool,
-        bool,
-        bool,
-        bool,
-        bool,
-    ) callconv(.C) u32;
-
+// Packed style flags (window_style_flags.h bit order) forwarded as one u32 to
+// match the native signature; the 12-bool form dropped stack args under Bun's
+// arm64 FFI. This legacy zig core is built only for mainProcess:"zig" apps.
+export fn getWindowStyle(flags: u32) u32 {
+    const GetWindowStyleFn = *const fn (u32) callconv(.C) u32;
     const get_window_style = lookupNativeSymbol(GetWindowStyleFn, "getWindowStyle") orelse return 0;
-    return get_window_style(
-        borderless,
-        titled,
-        closable,
-        miniaturizable,
-        resizable,
-        unified_title_and_toolbar,
-        full_screen,
-        full_size_content_view,
-        utility_window,
-        doc_modal_window,
-        nonactivating_panel,
-        hud_window,
-    );
+    return get_window_style(flags);
 }
 
 export fn createWindow(
