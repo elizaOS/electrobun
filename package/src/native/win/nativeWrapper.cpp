@@ -9377,6 +9377,19 @@ ELECTROBUN_EXPORT void testFFI2(void (*completionHandler)()) {
     }
 }
 
+// Window style mask bits (Windows encoding). The mask is opaque to the TS and
+// Rust layers: getWindowStyle (below) produces it and
+// createWindowWithFrameAndStyleFromWorker decodes it, both in this file, so
+// the bit values only need to agree here. UtilityWindow and NonactivatingPanel
+// mirror the macOS NSPanel semantics: no taskbar presence, and (for
+// NonactivatingPanel) no foreground activation on show or click.
+static const uint32_t EB_WIN_STYLE_BORDERLESS = 1u << 0;
+static const uint32_t EB_WIN_STYLE_TITLED = 1u << 1;
+static const uint32_t EB_WIN_STYLE_CLOSABLE = 1u << 2;
+static const uint32_t EB_WIN_STYLE_RESIZABLE = 1u << 3;
+static const uint32_t EB_WIN_STYLE_UTILITY_WINDOW = 1u << 4;
+static const uint32_t EB_WIN_STYLE_NONACTIVATING_PANEL = 1u << 5;
+
 ELECTROBUN_EXPORT HWND createWindowWithFrameAndStyleFromWorker(
     uint32_t windowId,
     double x, double y,
@@ -9449,6 +9462,21 @@ ELECTROBUN_EXPORT HWND createWindowWithFrameAndStyleFromWorker(
             windowExStyle |= WS_EX_LAYERED;
         }
 
+        const bool nonactivatingPanel = (styleMask & EB_WIN_STYLE_NONACTIVATING_PANEL) != 0;
+        const bool utilityWindow = (styleMask & EB_WIN_STYLE_UTILITY_WINDOW) != 0;
+        if (nonactivatingPanel) {
+            // Flyout/overlay surfaces (tray popover, bottom pill): never steal
+            // foreground activation, keep no taskbar button, stay above normal
+            // windows. WS_EX_APPWINDOW must be dropped - it forces a taskbar
+            // button, which WS_EX_TOOLWINDOW suppresses.
+            windowExStyle &= ~WS_EX_APPWINDOW;
+            windowExStyle |= WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_TOPMOST;
+        } else if (utilityWindow) {
+            // Utility windows skip the taskbar but still activate normally.
+            windowExStyle &= ~WS_EX_APPWINDOW;
+            windowExStyle |= WS_EX_TOOLWINDOW;
+        }
+
         // Create the window
         HWND hwnd = CreateWindowExA(  // Use CreateWindowExA to support extended styles
             windowExStyle,
@@ -9496,8 +9524,9 @@ ELECTROBUN_EXPORT HWND createWindowWithFrameAndStyleFromWorker(
                     SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
             }
 
-            // Show the window
-            ShowWindow(hwnd, SW_SHOW);
+            // Show the window. Non-activating panels are shown without
+            // activation so the foreground window keeps focus.
+            ShowWindow(hwnd, nonactivatingPanel ? SW_SHOWNA : SW_SHOW);
             UpdateWindow(hwnd);
         } else {
             // Clean up if window creation failed
@@ -11024,9 +11053,34 @@ ELECTROBUN_EXPORT void removeTray(NSStatusItem *statusItem) {
     });
 }
 
+// Screen rect of the tray icon in physical pixels (top-left origin), matching
+// the coordinate space the Screen API reports on Windows. Falls back to a
+// zero rect when the icon rect is unavailable (e.g. icon hidden in the
+// overflow well on some shells), which callers treat as "anchor from
+// workArea instead".
 ELECTROBUN_EXPORT const char* getTrayBounds(NSStatusItem *statusItem) {
-    (void)statusItem;
-    return _strdup("{\"x\":0,\"y\":0,\"width\":0,\"height\":0}");
+    if (!statusItem || !statusItem->hwnd) {
+        return _strdup("{\"x\":0,\"y\":0,\"width\":0,\"height\":0}");
+    }
+
+    NOTIFYICONIDENTIFIER identifier = {};
+    identifier.cbSize = sizeof(NOTIFYICONIDENTIFIER);
+    identifier.hWnd = statusItem->nid.hWnd;
+    identifier.uID = statusItem->nid.uID;
+
+    RECT rect = {};
+    HRESULT hr = Shell_NotifyIconGetRect(&identifier, &rect);
+    if (FAILED(hr)) {
+        char errorMsg[128];
+        sprintf_s(errorMsg, "getTrayBounds: Shell_NotifyIconGetRect failed: 0x%08lX", (unsigned long)hr);
+        ::log(errorMsg);
+        return _strdup("{\"x\":0,\"y\":0,\"width\":0,\"height\":0}");
+    }
+
+    char json[128];
+    sprintf_s(json, "{\"x\":%ld,\"y\":%ld,\"width\":%ld,\"height\":%ld}",
+              rect.left, rect.top, rect.right - rect.left, rect.bottom - rect.top);
+    return _strdup(json);
 }
 
 ELECTROBUN_EXPORT void setApplicationMenu(const char *jsonString, ZigStatusItemHandler zigTrayItemHandler) {
@@ -11212,7 +11266,9 @@ extern "C" ELECTROBUN_EXPORT const char* getWebviewHTMLContent(uint32_t webviewI
     }
 }
 
-// Adding a few Windows-specific functions for interop if needed
+// Pack the cross-platform style flags into the Windows mask encoding
+// (EB_WIN_STYLE_* bits, decoded by createWindowWithFrameAndStyleFromWorker).
+// Flags with no Win32 equivalent are accepted and ignored.
 ELECTROBUN_EXPORT uint32_t getWindowStyle(
     bool Borderless,
     bool Titled,
@@ -11226,12 +11282,13 @@ ELECTROBUN_EXPORT uint32_t getWindowStyle(
     bool DocModalWindow,
     bool NonactivatingPanel,
     bool HUDWindow) {
-    // Stub implementation that returns a composite style mask
     uint32_t mask = 0;
-    if (Borderless) mask |= 1;
-    if (Titled) mask |= 2;
-    if (Closable) mask |= 4;
-    if (Resizable) mask |= 8;
+    if (Borderless) mask |= EB_WIN_STYLE_BORDERLESS;
+    if (Titled) mask |= EB_WIN_STYLE_TITLED;
+    if (Closable) mask |= EB_WIN_STYLE_CLOSABLE;
+    if (Resizable) mask |= EB_WIN_STYLE_RESIZABLE;
+    if (UtilityWindow) mask |= EB_WIN_STYLE_UTILITY_WINDOW;
+    if (NonactivatingPanel) mask |= EB_WIN_STYLE_NONACTIVATING_PANEL;
     return mask;
 }
 

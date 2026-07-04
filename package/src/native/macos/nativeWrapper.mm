@@ -7,6 +7,7 @@
 #import <WebKit/WebKit.h>
 #import <objc/runtime.h>
 #import <Cocoa/Cocoa.h>
+#import <Carbon/Carbon.h>
 #import <Foundation/Foundation.h>
 #import <CommonCrypto/CommonCrypto.h>
 #import <QuartzCore/QuartzCore.h>
@@ -7499,6 +7500,34 @@ extern "C" NSRect createNSRectWrapper(double x, double y, double width, double h
 - (BOOL)canBecomeMainWindow { return YES; }
 @end
 
+// Non-activating floating panel (the Spotlight/Raycast/Wispr pattern). AppKit
+// honors NSWindowStyleMaskNonactivatingPanel only on NSPanel subclasses, so a
+// window created with that mask bit must be a panel: it can take key status
+// for typing while the previously-active app keeps menu-bar ownership.
+@interface ElectrobunPanel : NSPanel
+@end
+
+@implementation ElectrobunPanel
+- (BOOL)canBecomeKeyWindow { return YES; }
+// Panels are auxiliary surfaces; they never own the main-window role.
+- (BOOL)canBecomeMainWindow { return NO; }
+@end
+
+// Content view for non-activating panels: accept the first click while the
+// panel is not key so a summoned panel reacts immediately, without a separate
+// focusing click.
+@interface PanelContainerView : ContainerView
+@end
+
+@implementation PanelContainerView
+- (BOOL)acceptsFirstMouse:(NSEvent *)event { return YES; }
+@end
+
+static BOOL isNonactivatingPanel(NSWindow *window) {
+    return [window isKindOfClass:[NSPanel class]] &&
+           ([window styleMask] & NSWindowStyleMaskNonactivatingPanel) != 0;
+}
+
 NSWindow *createNSWindowWithFrameAndStyle(uint32_t windowId,
                                                      createNSWindowWithFrameAndStyleParams config,
                                                      WindowCloseHandler zigCloseHandler,
@@ -7507,21 +7536,45 @@ NSWindow *createNSWindowWithFrameAndStyle(uint32_t windowId,
                                                      WindowFocusHandler zigFocusHandler,
                                                      WindowBlurHandler zigBlurHandler,
                                                      WindowKeyHandler zigKeyHandler) {
-    
+
     NSScreen *primaryScreen = [NSScreen screens][0];
     NSRect screenFrame = [primaryScreen frame];
     config.frame.origin.y = screenFrame.size.height - config.frame.origin.y;
-    
-    NSWindow *window = [[ElectrobunWindow alloc] initWithContentRect:config.frame
-                                                          styleMask:config.styleMask
-                                                            backing:NSBackingStoreBuffered
-                                                              defer:YES
-                                                             screen:primaryScreen];
-    
+
+    BOOL wantsNonactivatingPanel = (config.styleMask & NSWindowStyleMaskNonactivatingPanel) != 0;
+    NSWindow *window;
+    if (wantsNonactivatingPanel) {
+        ElectrobunPanel *panel = [[ElectrobunPanel alloc] initWithContentRect:config.frame
+                                                                    styleMask:config.styleMask
+                                                                      backing:NSBackingStoreBuffered
+                                                                        defer:YES
+                                                                       screen:primaryScreen];
+        // Key status is granted on demand (clicking a text field) rather than
+        // on ordering, and the panel must survive the app deactivating.
+        panel.becomesKeyOnlyIfNeeded = YES;
+        panel.hidesOnDeactivate = NO;
+        panel.floatingPanel = YES;
+        panel.level = NSFloatingWindowLevel;
+        window = panel;
+    } else {
+        window = [[ElectrobunWindow alloc] initWithContentRect:config.frame
+                                                     styleMask:config.styleMask
+                                                       backing:NSBackingStoreBuffered
+                                                         defer:YES
+                                                        screen:primaryScreen];
+    }
+
     [window setFrameTopLeftPoint:config.frame.origin];
-    // Allow hidden titlebar windows to participate in native fullscreen.
-    [window setCollectionBehavior:
-        [window collectionBehavior] | NSWindowCollectionBehaviorFullScreenPrimary];
+    if (wantsNonactivatingPanel) {
+        // Panels join every Space and float alongside full-screen apps; they
+        // must not be native-fullscreen candidates themselves.
+        [window setCollectionBehavior:
+            NSWindowCollectionBehaviorCanJoinAllSpaces | NSWindowCollectionBehaviorFullScreenAuxiliary];
+    } else {
+        // Allow hidden titlebar windows to participate in native fullscreen.
+        [window setCollectionBehavior:
+            [window collectionBehavior] | NSWindowCollectionBehaviorFullScreenPrimary];
+    }
     if (strcmp(config.titleBarStyle, "hiddenInset") == 0) {
         window.titlebarAppearsTransparent = YES;
         window.titleVisibility = NSWindowTitleHidden;
@@ -7552,13 +7605,12 @@ NSWindow *createNSWindowWithFrameAndStyle(uint32_t windowId,
     objc_setAssociatedObject(window, "WindowDelegate", delegate, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     window.releasedWhenClosed = NO;
 
-    ContainerView *contentView = [[ContainerView alloc] initWithFrame:[window frame]];
+    ContainerView *contentView = wantsNonactivatingPanel
+        ? [[PanelContainerView alloc] initWithFrame:[window frame]]
+        : [[ContainerView alloc] initWithFrame:[window frame]];
     contentView.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
     [window setContentView:contentView];
     return window;
-
-    // return (void*)window;
-    
 }
 
 extern "C" void testFFI2(void (*completionHandler)()) {
@@ -7642,9 +7694,15 @@ extern "C" NSWindow *createWindowWithFrameAndStyleFromWorker(
 extern "C" void showWindow(NSWindow *window, bool activate) {
     runOnMainThreadSyncVoid(^{
         if (activate) {
-            [window orderFront:nil];
-            [window makeKeyAndOrderFront:nil];
-            [[NSApplication sharedApplication] activateIgnoringOtherApps:YES];
+            if (isNonactivatingPanel(window)) {
+                // Key status without app activation: the previously-active app
+                // keeps menu-bar ownership while the panel accepts typing.
+                [window makeKeyAndOrderFront:nil];
+            } else {
+                [window orderFront:nil];
+                [window makeKeyAndOrderFront:nil];
+                [[NSApplication sharedApplication] activateIgnoringOtherApps:YES];
+            }
         } else {
             [window orderFrontRegardless];
         }
@@ -7667,7 +7725,9 @@ extern "C" void activateWindow(NSWindow *window) {
         }
 
         [window makeKeyAndOrderFront:nil];
-        [[NSApplication sharedApplication] activateIgnoringOtherApps:YES];
+        if (!isNonactivatingPanel(window)) {
+            [[NSApplication sharedApplication] activateIgnoringOtherApps:YES];
+        }
     });
 }
 
@@ -8589,15 +8649,66 @@ const char* getWebviewHTMLContent(uint32_t webviewId) {
  * =============================================================================
  * GLOBAL KEYBOARD SHORTCUTS
  * =============================================================================
+ * Implemented with Carbon RegisterEventHotKey (the same mechanism Electron
+ * uses): registration needs no Accessibility permission and returning noErr
+ * from the event handler consumes the chord system-wide, so the focused app
+ * never also receives it. The NSEvent addGlobalMonitorForEvents approach this
+ * replaces required Accessibility trust and could only observe, never swallow.
  */
 
 // Callback type for global shortcut triggers
 typedef void (*GlobalShortcutCallback)(const char* accelerator);
 static GlobalShortcutCallback g_globalShortcutCallback = nullptr;
 
-// Storage for registered shortcuts: accelerator string -> event monitor
-static NSMutableDictionary<NSString*, id> *g_globalShortcuts = nil;
-static NSLock *g_globalShortcutsLock = nil;
+static const OSType kElectrobunHotKeySignature = 'ebun';
+
+// Registered shortcuts, keyed by accelerator string. The id map lets the
+// Carbon event handler translate an EventHotKeyID back to its accelerator.
+static std::mutex g_globalShortcutsMutex;
+static std::map<std::string, std::pair<EventHotKeyRef, UInt32>> g_globalShortcuts;
+static std::map<UInt32, std::string> g_hotKeyIdToAccelerator;
+static UInt32 g_nextHotKeyId = 1;
+static EventHandlerRef g_hotKeyEventHandlerRef = NULL;
+
+// Convert NSEventModifierFlags (from the shared accelerator parser) to the
+// Carbon modifier mask RegisterEventHotKey expects.
+static UInt32 carbonModifiersFromFlags(NSEventModifierFlags flags) {
+    UInt32 mods = 0;
+    if (flags & NSEventModifierFlagCommand) mods |= cmdKey;
+    if (flags & NSEventModifierFlagControl) mods |= controlKey;
+    if (flags & NSEventModifierFlagOption)  mods |= optionKey;
+    if (flags & NSEventModifierFlagShift)   mods |= shiftKey;
+    return mods;
+}
+
+static OSStatus globalHotKeyEventHandler(EventHandlerCallRef nextHandler, EventRef event, void *userData) {
+    (void)nextHandler;
+    (void)userData;
+
+    EventHotKeyID hotKeyID;
+    OSStatus status = GetEventParameter(event, kEventParamDirectObject, typeEventHotKeyID,
+                                        NULL, sizeof(hotKeyID), NULL, &hotKeyID);
+    if (status != noErr || hotKeyID.signature != kElectrobunHotKeySignature) {
+        return eventNotHandledErr;
+    }
+
+    std::string accelerator;
+    {
+        std::lock_guard<std::mutex> lock(g_globalShortcutsMutex);
+        auto it = g_hotKeyIdToAccelerator.find(hotKeyID.id);
+        if (it == g_hotKeyIdToAccelerator.end()) {
+            return eventNotHandledErr;
+        }
+        accelerator = it->second;
+    }
+
+    if (g_globalShortcutCallback) {
+        g_globalShortcutCallback(accelerator.c_str());
+    }
+
+    // noErr consumes the chord: the frontmost app never receives it.
+    return noErr;
+}
 
 // Helper to parse modifier flags from accelerator string using the shared
 // cross-platform parser from accelerator_parser.h.
@@ -8654,12 +8765,6 @@ static unsigned short keyCodeFromString(NSString *key) {
 // Set the callback for global shortcut events
 extern "C" void setGlobalShortcutCallback(GlobalShortcutCallback callback) {
     g_globalShortcutCallback = callback;
-
-    // Initialize storage if needed
-    if (!g_globalShortcuts) {
-        g_globalShortcuts = [[NSMutableDictionary alloc] init];
-        g_globalShortcutsLock = [[NSLock alloc] init];
-    }
 }
 
 // Register a global keyboard shortcut
@@ -8670,96 +8775,91 @@ extern "C" BOOL registerGlobalShortcut(const char* accelerator) {
     }
 
     NSString *accelStr = [NSString stringWithUTF8String:accelerator];
+    std::string accelKey(accelerator);
 
-    [g_globalShortcutsLock lock];
-
-    // Check if already registered
-    if (g_globalShortcuts[accelStr]) {
-        [g_globalShortcutsLock unlock];
-        NSLog(@"[GlobalShortcut] Already registered: %@", accelStr);
-        return NO;
-    }
-
-    // Parse the accelerator
+    // Parse the accelerator (shared parser; keyCodeFromString returns macOS
+    // virtual key codes, which RegisterEventHotKey takes directly).
     NSString *key = nil;
     NSEventModifierFlags modifiers = parseModifiers(accelStr, &key);
     unsigned short keyCode = keyCodeFromString(key);
 
     if (keyCode == 0xFFFF) {
-        [g_globalShortcutsLock unlock];
         NSLog(@"[GlobalShortcut] Unknown key: %@", key);
         return NO;
     }
 
-    // Create a copy of accelerator for the block
-    NSString *accelCopy = [accelStr copy];
+    std::lock_guard<std::mutex> lock(g_globalShortcutsMutex);
 
-    // Create global monitor
-    id monitor = [NSEvent addGlobalMonitorForEventsMatchingMask:NSEventMaskKeyDown
-        handler:^(NSEvent *event) {
-            // Check if the key and modifiers match
-            if (event.keyCode == keyCode) {
-                // Mask out irrelevant modifier bits (like caps lock, fn, etc.)
-                NSEventModifierFlags relevantMask = (NSEventModifierFlagCommand |
-                                                     NSEventModifierFlagControl |
-                                                     NSEventModifierFlagOption |
-                                                     NSEventModifierFlagShift);
-                NSEventModifierFlags eventMods = event.modifierFlags & relevantMask;
-
-                if (eventMods == modifiers) {
-                    // Trigger the callback
-                    if (g_globalShortcutCallback) {
-                        g_globalShortcutCallback([accelCopy UTF8String]);
-                    }
-                }
-            }
-        }];
-
-    if (monitor) {
-        g_globalShortcuts[accelStr] = monitor;
-        [g_globalShortcutsLock unlock];
-        NSLog(@"[GlobalShortcut] Registered: %@ (keyCode: %d, modifiers: 0x%lX)",
-              accelStr, keyCode, (unsigned long)modifiers);
-        return YES;
+    if (g_globalShortcuts.count(accelKey)) {
+        NSLog(@"[GlobalShortcut] Already registered: %@", accelStr);
+        return NO;
     }
 
-    [g_globalShortcutsLock unlock];
-    NSLog(@"[GlobalShortcut] Failed to create monitor for: %@", accelStr);
-    return NO;
+    // One handler serves every hotkey; installed lazily on first registration.
+    if (!g_hotKeyEventHandlerRef) {
+        EventTypeSpec eventType = { kEventClassKeyboard, kEventHotKeyPressed };
+        OSStatus status = InstallEventHandler(GetEventDispatcherTarget(),
+                                              &globalHotKeyEventHandler,
+                                              1, &eventType, NULL,
+                                              &g_hotKeyEventHandlerRef);
+        if (status != noErr) {
+            NSLog(@"[GlobalShortcut] Failed to install Carbon event handler (%d)", (int)status);
+            return NO;
+        }
+    }
+
+    UInt32 carbonModifiers = carbonModifiersFromFlags(modifiers);
+    EventHotKeyID hotKeyID = { kElectrobunHotKeySignature, g_nextHotKeyId };
+    EventHotKeyRef hotKeyRef = NULL;
+    OSStatus status = RegisterEventHotKey((UInt32)keyCode,
+                                          carbonModifiers,
+                                          hotKeyID,
+                                          GetEventDispatcherTarget(),
+                                          0,
+                                          &hotKeyRef);
+
+    if (status != noErr || !hotKeyRef) {
+        NSLog(@"[GlobalShortcut] RegisterEventHotKey failed for %@ (status: %d)", accelStr, (int)status);
+        return NO;
+    }
+
+    g_globalShortcuts[accelKey] = { hotKeyRef, g_nextHotKeyId };
+    g_hotKeyIdToAccelerator[g_nextHotKeyId] = accelKey;
+    g_nextHotKeyId++;
+
+    NSLog(@"[GlobalShortcut] Registered: %@ (keyCode: %d, carbonModifiers: 0x%X)",
+          accelStr, keyCode, (unsigned int)carbonModifiers);
+    return YES;
 }
 
 // Unregister a global keyboard shortcut
 extern "C" BOOL unregisterGlobalShortcut(const char* accelerator) {
     if (!accelerator) return NO;
 
-    NSString *accelStr = [NSString stringWithUTF8String:accelerator];
+    std::lock_guard<std::mutex> lock(g_globalShortcutsMutex);
 
-    [g_globalShortcutsLock lock];
-
-    id monitor = g_globalShortcuts[accelStr];
-    if (monitor) {
-        [NSEvent removeMonitor:monitor];
-        [g_globalShortcuts removeObjectForKey:accelStr];
-        [g_globalShortcutsLock unlock];
-        NSLog(@"[GlobalShortcut] Unregistered: %@", accelStr);
-        return YES;
+    auto it = g_globalShortcuts.find(std::string(accelerator));
+    if (it == g_globalShortcuts.end()) {
+        return NO;
     }
 
-    [g_globalShortcutsLock unlock];
-    return NO;
+    UnregisterEventHotKey(it->second.first);
+    g_hotKeyIdToAccelerator.erase(it->second.second);
+    g_globalShortcuts.erase(it);
+    NSLog(@"[GlobalShortcut] Unregistered: %s", accelerator);
+    return YES;
 }
 
 // Unregister all global keyboard shortcuts
 extern "C" void unregisterAllGlobalShortcuts(void) {
-    [g_globalShortcutsLock lock];
+    std::lock_guard<std::mutex> lock(g_globalShortcutsMutex);
 
-    for (NSString *key in g_globalShortcuts) {
-        id monitor = g_globalShortcuts[key];
-        [NSEvent removeMonitor:monitor];
+    for (auto& entry : g_globalShortcuts) {
+        UnregisterEventHotKey(entry.second.first);
     }
-    [g_globalShortcuts removeAllObjects];
+    g_globalShortcuts.clear();
+    g_hotKeyIdToAccelerator.clear();
 
-    [g_globalShortcutsLock unlock];
     NSLog(@"[GlobalShortcut] Unregistered all shortcuts");
 }
 
@@ -8767,13 +8867,8 @@ extern "C" void unregisterAllGlobalShortcuts(void) {
 extern "C" BOOL isGlobalShortcutRegistered(const char* accelerator) {
     if (!accelerator) return NO;
 
-    NSString *accelStr = [NSString stringWithUTF8String:accelerator];
-
-    [g_globalShortcutsLock lock];
-    BOOL result = g_globalShortcuts[accelStr] != nil;
-    [g_globalShortcutsLock unlock];
-
-    return result;
+    std::lock_guard<std::mutex> lock(g_globalShortcutsMutex);
+    return g_globalShortcuts.count(std::string(accelerator)) > 0;
 }
 
 /*

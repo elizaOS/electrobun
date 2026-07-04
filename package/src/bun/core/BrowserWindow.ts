@@ -11,6 +11,32 @@ ffi.request.setExitOnLastWindowClosed({
 	enabled: buildConfig.runtime?.exitOnLastWindowClosed ?? true,
 });
 
+// Window style flags, expanded into a per-OS style mask by the native
+// getWindowStyle. Names follow macOS NSWindowStyleMask; other platforms map
+// the flags they support and ignore the rest.
+//
+// NonactivatingPanel is the cross-platform "focus-preserving overlay" flag
+// (the Spotlight/Raycast pattern): on macOS the window is created as an
+// NSPanel that can take key status for typing while the previously-active
+// app keeps menu-bar ownership, floats above normal windows, and joins all
+// Spaces; on Windows it maps to WS_EX_NOACTIVATE + WS_EX_TOOLWINDOW +
+// WS_EX_TOPMOST (no focus steal, no taskbar button); on Linux it is ignored.
+// UtilityWindow on Windows maps to WS_EX_TOOLWINDOW (no taskbar button).
+export type WindowStyleMask = {
+	Borderless?: boolean;
+	Titled?: boolean;
+	Closable?: boolean;
+	Miniaturizable?: boolean;
+	Resizable?: boolean;
+	UnifiedTitleAndToolbar?: boolean;
+	FullScreen?: boolean;
+	FullSizeContentView?: boolean;
+	UtilityWindow?: boolean;
+	DocModalWindow?: boolean;
+	NonactivatingPanel?: boolean;
+	HUDWindow?: boolean;
+};
+
 export type WindowOptionsType<T = undefined> = {
 	trafficLightOffset?: {
 		x: number;
@@ -30,7 +56,7 @@ export type WindowOptionsType<T = undefined> = {
 	viewsRoot: string | null;
 	renderer: "native" | "cef";
 	rpc?: T;
-	styleMask?: {};
+	styleMask?: WindowStyleMask;
 	// titleBarStyle options:
 	// - 'default': normal titlebar with native window controls
 	// - 'hidden': no titlebar, no native window controls (for fully custom chrome)
