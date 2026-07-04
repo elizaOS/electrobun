@@ -8,6 +8,7 @@ import Electrobun, {
 	Utils,
 	BuildConfig,
 	Updater,
+	GlobalShortcut,
 } from "electrobun/bun";
 import { executor } from "../test-framework/executor";
 import { allTests } from "../tests";
@@ -405,6 +406,63 @@ if (autoRunTestName) {
 		}
 		await executor.runTest(test);
 	}, 2000);
+}
+
+// Manual verification surface for non-activating panels + Carbon global
+// hotkeys (elizaOS/eliza#12184). Usage: PANEL_DEMO=1 electrobun dev
+// Opens a floating non-activating panel (NSPanel on macOS) with a text input
+// and registers CommandOrControl+Shift+P to toggle it. Verify: typing in the
+// panel works while the previously-active app keeps menu-bar ownership (no
+// app switch), and the hotkey fires with Accessibility permission revoked
+// without the chord leaking to the focused app.
+const panelDemo = !!process.env["PANEL_DEMO"];
+if (panelDemo) {
+	const panelHtml = `<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><style>
+	body { margin: 0; font-family: -apple-system, system-ui, sans-serif;
+		background: rgba(30,30,34,0.96); color: #eee; border-radius: 12px;
+		display: flex; flex-direction: column; gap: 10px; padding: 18px; }
+	h1 { font-size: 15px; margin: 0; }
+	p { font-size: 12px; margin: 0; color: #aaa; }
+	input { font-size: 14px; padding: 8px 10px; border-radius: 8px;
+		border: 1px solid #555; background: #1a1a1e; color: #fff; outline: none; }
+	input:focus { border-color: #e8862d; }
+</style></head>
+<body>
+	<h1>Non-activating panel demo</h1>
+	<p>Type below — the previously-active app should keep menu-bar ownership.
+	CommandOrControl+Shift+P toggles this panel globally.</p>
+	<input id="field" placeholder="type here without switching apps" autofocus>
+</body>
+</html>`;
+
+	const panel = new BrowserWindow({
+		title: "Panel Demo",
+		html: panelHtml,
+		url: null,
+		renderer: "native",
+		titleBarStyle: "hidden",
+		styleMask: { NonactivatingPanel: true },
+		frame: { x: 200, y: 160, width: 520, height: 190 },
+	});
+
+	let panelVisible = true;
+	const panelAccelerator = "CommandOrControl+Shift+P";
+	const registered = GlobalShortcut.register(panelAccelerator, () => {
+		panelVisible = !panelVisible;
+		if (panelVisible) {
+			panel.show();
+		} else {
+			panel.hide();
+		}
+		console.log(
+			`[PanelDemo] hotkey ${panelAccelerator} -> ${panelVisible ? "show" : "hide"}`,
+		);
+	});
+	console.log(
+		`[PanelDemo] non-activating panel open; hotkey ${panelAccelerator} registered: ${registered}`,
+	);
 }
 
 const autoRunWgpu = !!process.env["AUTO_RUN_WGPU"];
